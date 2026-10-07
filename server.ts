@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -163,7 +164,6 @@ async function startServer() {
     res.json({
       status: 'online',
       system: 'PX CUSTOM Official Engine',
-      timestamp: new Date().toISOString(),
     });
   });
 
@@ -325,17 +325,18 @@ async function startServer() {
   // -------------------------------------------------------------
   // VITE DEV SERVER OR STATIC ASSETS
   // -------------------------------------------------------------
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.resolve(__dirname, 'dist');
+  if (process.env.NODE_ENV === 'production' || fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.resolve(distPath, 'index.html'));
+    });
+  } else {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
