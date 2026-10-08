@@ -166,8 +166,13 @@ export default function App() {
     setVehicles((prev) => prev.map((v) => (v.id === id ? updated : v)));
   };
 
-  const handleDeleteVehicle = (id: string) => {
-    setVehicles((prev) => prev.filter((v) => v.id !== id));
+  const handleDeleteVehicle = async (id: string) => {
+    try {
+      await api.deleteVehicle(id);
+      setVehicles((prev) => prev.filter((v) => v.id !== id));
+    } catch (err) {
+      console.error('Erro ao excluir veículo:', err);
+    }
   };
 
   const handleMarkAllNotifsRead = async () => {
@@ -176,8 +181,18 @@ export default function App() {
   };
 
   const handleAddEvent = async (eventData: Partial<EventItem>) => {
-    const created = await api.createEvent(eventData);
-    setEvents((prev) => [created, ...prev]);
+    try {
+      if (eventData.id) {
+        const updated = await api.updateEvent(eventData.id, eventData);
+        setEvents((prev) => prev.map((ev) => (ev.id === updated.id ? updated : ev)));
+      } else {
+        const created = await api.createEvent(eventData);
+        setEvents((prev) => [created, ...prev]);
+      }
+    } catch (err) {
+      console.error('[PX CONTROL] Erro ao persistir evento no Supabase:', err);
+      throw err;
+    }
   };
 
   const handleLoginSuccess = (redirectTarget?: string) => {

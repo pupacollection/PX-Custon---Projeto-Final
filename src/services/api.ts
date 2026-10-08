@@ -1,54 +1,258 @@
 import { EventItem, Ticket, Vehicle, CheckInLog, DashboardStats, MercadoPagoConfig, NotificationItem } from '../types';
-import { INITIAL_EVENTS, INITIAL_TICKETS, INITIAL_VEHICLES, INITIAL_DASHBOARD_STATS, INITIAL_MERCADO_PAGO_CONFIG, INITIAL_NOTIFICATIONS } from './mockData';
+import { INITIAL_TICKETS, INITIAL_DASHBOARD_STATS, INITIAL_MERCADO_PAGO_CONFIG, INITIAL_NOTIFICATIONS } from './mockData';
 import { supabase } from '../lib/supabase';
+import {
+  dbVehicleToVehicle,
+  vehicleToDbVehicle,
+  DbVehicleRow,
+  dbEventToEventItem,
+  eventItemToDbEvent,
+  DbEventRow,
+  DbTicketBatchRow,
+  ticketBatchToDbTicketBatch,
+} from './mappers';
 
 export const api = {
-  // Events
+  // Events (Persistência oficial em Supabase public.events)
   async getEvents(): Promise<EventItem[]> {
-    try {
-      const res = await fetch('/api/events');
-      if (res.ok) {
-        const json = await res.json();
-        return Array.isArray(json) ? json : INITIAL_EVENTS;
-      }
-    } catch {}
-    return INITIAL_EVENTS;
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
+    }
+
+    const { data, error } = await supabase
+      .from('events')
+      .select('*, ticket_batches(*), event_images(*)')
+      .neq('status', 'CANCELADO')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[PX CUSTOM] Erro ao carregar eventos do Supabase:', error);
+      throw new Error(error.message || 'Falha ao buscar eventos');
+    }
+
+    if (!data || data.length === 0) {
+      return [];
+    }
+
+    return (data as unknown as DbEventRow[]).map(dbEventToEventItem);
   },
 
   async getEventBySlug(slug: string): Promise<EventItem | null> {
-    try {
-      const res = await fetch(`/api/events/${slug}`);
-      if (res.ok) return await res.json();
-    } catch {}
-    return INITIAL_EVENTS.find((e) => e.slug === slug) || null;
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
+    }
+
+    if (!slug) {
+      return null;
+    }
+
+    const { data, error } = await supabase
+      .from('events')
+      .select('*, ticket_batches(*), event_images(*)')
+      .eq('slug', slug)
+      .maybeSingle();
+
+    if (error) {
+      console.error(`[PX CUSTOM] Erro ao carregar evento por slug "${slug}":`, error);
+      throw new Error(error.message || `Falha ao buscar evento ${slug}`);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    return dbEventToEventItem(data as unknown as DbEventRow);
   },
 
   async createEvent(eventData: Partial<EventItem>): Promise<EventItem> {
-    try {
-      const res = await fetch('/api/events', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(eventData),
-      });
-      if (res.ok) return await res.json();
-    } catch {}
-    return {
-      id: `evt-${Date.now()}`,
-      slug: (eventData.name || 'novo-evento').toLowerCase().replace(/\s+/g, '-'),
-      name: eventData.name || 'Novo Evento',
-      description: eventData.description || '',
-      date: eventData.date || 'Data a definir',
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
+    }
+
+    // 1. Obter e validar sessão do usuário autenticado
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar autenticação: ${sessionError.message}`);
+    }
+
+    const authUserId = sessionData?.session?.user?.id;
+    if (!authUserId) {
+      throw new Error('Usuário não autenticado. Faça login no PX CONTROL para criar eventos.');
+    }
+
+    // 2. Validações mínimas obrigatórias
+    const name = eventData.name?.trim();
+    if (!name) {
+      throw new Error('O nome do evento é obrigatório.');
+    }
+
+    const baseSlug = (eventData.slug?.trim() || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')) || `evento-${Date.now()}`;
+    const slug = baseSlug;
+
+    const payload = eventItemToDbEvent({
+      ...eventData,
+      name,
+      slug,
       dateBadge: eventData.dateBadge || 'EM BREVE',
+      date: eventData.date || 'Data a definir',
       time: eventData.time || 'A definir',
-      location: eventData.location || 'Manhuaçu - MG',
-      city: 'Manhuaçu',
-      state: 'MG',
-      status: 'EM_BREVE',
+      location: eventData.location || 'Parque de Exposições - Manhuaçu/MG',
+      city: eventData.city || 'Manhuaçu',
+      state: eventData.state || 'MG',
+      description: eventData.description || '',
       bannerImage: eventData.bannerImage || 'https://images.unsplash.com/photo-1617814076367-b759c7d7e738?auto=format&fit=crop&w=1600&q=80',
-      gallery: [],
-      features: { cars: true, motos: true, audio: true, food: true },
-      ticketBatches: [],
-    };
+    });
+
+    // Remove ID temporário de mock se enviado no frontend
+    delete payload.id;
+
+    // 3. Inserir evento na tabela public.events
+    const { data: createdEvent, error: insertError } = await supabase
+      .from('events')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error('[PX CUSTOM] Erro ao cadastrar evento no Supabase:', insertError);
+      throw new Error(insertError.message || 'Falha ao salvar evento no banco de dados.');
+    }
+
+    const eventId = createdEvent.id;
+
+    // 4. Inserir lotes de ingressos (ticket_batches) se fornecidos
+    if (eventData.ticketBatches && eventData.ticketBatches.length > 0) {
+      const batchesPayload = eventData.ticketBatches.map((batch) => {
+        const dbBatch = ticketBatchToDbTicketBatch(batch, eventId);
+        // Remove id temporário (ex: batch-12345) para o PostgreSQL gerar UUID
+        delete dbBatch.id;
+        dbBatch.event_id = eventId;
+        return dbBatch;
+      });
+
+      const { error: batchError } = await supabase
+        .from('ticket_batches')
+        .insert(batchesPayload);
+
+      if (batchError) {
+        console.warn('[PX CUSTOM] Aviso: Lotes de ingressos não puderam ser persistidos:', batchError.message);
+      }
+    }
+
+    // 5. Inserir imagens na galeria (event_images) se fornecidas
+    if (eventData.gallery && eventData.gallery.length > 0) {
+      const imagesPayload = eventData.gallery.map((url, idx) => ({
+        event_id: eventId,
+        bucket: 'events',
+        storage_path: `events/${eventId}/gallery/img_${idx}_${Date.now()}.jpg`,
+        public_url: url,
+        image_url: url,
+        file_name: `foto-galeria-${idx + 1}.jpg`,
+        mime_type: 'image/jpeg',
+        display_order: idx,
+        sort_order: idx,
+        is_primary: false,
+      }));
+
+      const { error: imgError } = await supabase
+        .from('event_images')
+        .insert(imagesPayload);
+
+      if (imgError) {
+        console.warn('[PX CUSTOM] Aviso: Imagens da galeria não puderam ser inseridas:', imgError.message);
+      }
+    }
+
+    // 6. Retornar evento completo atualizado direto do banco com relacionamentos
+    const { data: fullData, error: fetchError } = await supabase
+      .from('events')
+      .select('*, ticket_batches(*), event_images(*)')
+      .eq('id', eventId)
+      .single();
+
+    if (fetchError || !fullData) {
+      return dbEventToEventItem(createdEvent as DbEventRow);
+    }
+
+    return dbEventToEventItem(fullData as unknown as DbEventRow);
+  },
+
+  async updateEvent(id: string, eventData: Partial<EventItem>): Promise<EventItem> {
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
+    }
+
+    if (!id) {
+      throw new Error('ID do evento é obrigatório para atualização.');
+    }
+
+    // 1. Obter e validar sessão do usuário autenticado
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar autenticação: ${sessionError.message}`);
+    }
+
+    const authUserId = sessionData?.session?.user?.id;
+    if (!authUserId) {
+      throw new Error('Usuário não autenticado. Faça login no PX CONTROL para editar eventos.');
+    }
+
+    // 2. Preparar payload de atualização
+    const payload = eventItemToDbEvent(eventData);
+    delete payload.id; // Não atualiza chave primária
+
+    // 3. Atualizar no banco Supabase
+    const { data: updatedRow, error: updateError } = await supabase
+      .from('events')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error(`[PX CUSTOM] Erro ao atualizar evento "${id}":`, updateError);
+      throw new Error(updateError.message || 'Falha ao atualizar evento no Supabase.');
+    }
+
+    // 4. Atualizar galeria se novas imagens forem fornecidas
+    if (eventData.gallery && eventData.gallery.length > 0) {
+      // Exclui fotos existentes se houver nova lista sincronizada
+      await supabase.from('event_images').delete().eq('event_id', id);
+
+      const imagesPayload = eventData.gallery.map((url, idx) => ({
+        event_id: id,
+        bucket: 'events',
+        storage_path: `events/${id}/gallery/img_${idx}_${Date.now()}.jpg`,
+        public_url: url,
+        image_url: url,
+        file_name: `foto-galeria-${idx + 1}.jpg`,
+        mime_type: 'image/jpeg',
+        display_order: idx,
+        sort_order: idx,
+        is_primary: false,
+      }));
+
+      const { error: galleryErr } = await supabase
+        .from('event_images')
+        .insert(imagesPayload);
+
+      if (galleryErr) {
+        console.warn('[PX CUSTOM] Aviso ao sincronizar galeria do evento:', galleryErr.message);
+      }
+    }
+
+    // 5. Retornar evento completo atualizado com relacionamentos
+    const { data: fullData, error: fetchError } = await supabase
+      .from('events')
+      .select('*, ticket_batches(*), event_images(*)')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !fullData) {
+      return dbEventToEventItem(updatedRow as DbEventRow);
+    }
+
+    return dbEventToEventItem(fullData as unknown as DbEventRow);
   },
 
   // Tickets
@@ -157,155 +361,154 @@ export const api = {
     return INITIAL_DASHBOARD_STATS;
   },
 
-  // Vehicles
+  // Vehicles (Persistência oficial em Supabase public.vehicles)
   async getVehicles(userId?: string): Promise<Vehicle[]> {
-    if (supabase && userId) {
-      try {
-        const { data, error } = await supabase
-          .from('vehicles')
-          .select('*')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false });
-
-        if (!error && data && data.length > 0) {
-          return data.map((d) => ({
-            id: d.id,
-            userId: d.user_id,
-            type: d.type || 'Carro',
-            brand: d.brand,
-            model: d.model,
-            year: d.year,
-            color: d.color,
-            plate: d.plate,
-            category: d.category || 'Rebaixado',
-            description: d.description || '',
-            photoUrl: d.photo_url || undefined,
-          }));
-        }
-      } catch {
-        // Fallback
-      }
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
     }
 
-    try {
-      const res = await fetch('/api/vehicles');
-      if (res.ok) {
-        const json = await res.json();
-        return Array.isArray(json) ? json : INITIAL_VEHICLES;
-      }
-    } catch {}
-    return INITIAL_VEHICLES;
+    // Identifica o ID do usuário autenticado pela sessão ativa
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar autenticação: ${sessionError.message}`);
+    }
+
+    const authenticatedUserId = sessionData?.session?.user?.id || userId;
+    if (!authenticatedUserId) {
+      // Usuário não autenticado no momento (ex: visitante na home)
+      return [];
+    }
+
+    const { data, error } = await supabase
+      .from('vehicles')
+      .select('*')
+      .eq('user_id', authenticatedUserId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Falha ao carregar veículos do Supabase: ${error.message}`);
+    }
+
+    return (data || []).map((row) => dbVehicleToVehicle(row as DbVehicleRow));
   },
 
   async addVehicle(vehicle: Partial<Vehicle>): Promise<Vehicle> {
-    const currentUserId = vehicle.userId || '';
-
-    if (supabase && currentUserId) {
-      try {
-        const { data, error } = await supabase
-          .from('vehicles')
-          .insert({
-            user_id: currentUserId,
-            brand: vehicle.brand || '',
-            model: vehicle.model || '',
-            year: vehicle.year || 2020,
-            color: vehicle.color || '',
-            type: vehicle.type || 'Carro',
-            category: vehicle.category || 'Rebaixado',
-            plate: vehicle.plate || null,
-            description: vehicle.description || null,
-            photo_url: vehicle.photoUrl || null,
-          })
-          .select()
-          .single();
-
-        if (!error && data) {
-          return {
-            id: data.id,
-            userId: data.user_id,
-            type: data.type || 'Carro',
-            brand: data.brand,
-            model: data.model,
-            year: data.year,
-            color: data.color,
-            plate: data.plate,
-            category: data.category || 'Rebaixado',
-            description: data.description || '',
-            photoUrl: data.photo_url,
-            photos: vehicle.photos,
-          };
-        }
-      } catch {
-        // Fallback
-      }
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
     }
 
-    try {
-      const res = await fetch('/api/vehicles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(vehicle),
-      });
-      if (res.ok) return await res.json();
-    } catch {}
-    return {
-      id: `veh-${Date.now()}`,
-      userId: currentUserId,
-      type: vehicle.type || 'Carro',
-      brand: vehicle.brand || 'Chevrolet',
-      model: vehicle.model || 'Classic',
-      year: vehicle.year || 2012,
-      color: vehicle.color || 'Prata',
-      plate: vehicle.plate || 'PXC-2012',
-      description: vehicle.description || '',
-      photoUrl: vehicle.photoUrl,
-      photos: vehicle.photos,
-    };
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar sessão: ${sessionError.message}`);
+    }
+
+    const authenticatedUserId = sessionData?.session?.user?.id;
+    if (!authenticatedUserId) {
+      throw new Error('Usuário não autenticado. Faça login para cadastrar um veículo.');
+    }
+
+    const dbPayload = vehicleToDbVehicle({
+      ...vehicle,
+      userId: authenticatedUserId,
+    });
+    // O user_id vem estritamente da sessão autenticada
+    dbPayload.user_id = authenticatedUserId;
+
+    const { data, error } = await supabase
+      .from('vehicles')
+      .insert(dbPayload)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Erro ao cadastrar veículo no Supabase: ${error.message}`);
+    }
+
+    const createdVehicle = dbVehicleToVehicle(data as DbVehicleRow);
+    if (vehicle.photos && vehicle.photos.length > 0) {
+      createdVehicle.photos = vehicle.photos;
+    }
+    return createdVehicle;
   },
 
   async updateVehicle(id: string, vehicle: Partial<Vehicle>): Promise<Vehicle> {
-    const currentUserId = vehicle.userId || '';
-
-    if (supabase) {
-      try {
-        const updatePayload: Record<string, unknown> = {};
-        if (vehicle.brand !== undefined) updatePayload.brand = vehicle.brand;
-        if (vehicle.model !== undefined) updatePayload.model = vehicle.model;
-        if (vehicle.year !== undefined) updatePayload.year = vehicle.year;
-        if (vehicle.color !== undefined) updatePayload.color = vehicle.color;
-        if (vehicle.category !== undefined) updatePayload.category = vehicle.category;
-        if (vehicle.plate !== undefined) updatePayload.plate = vehicle.plate;
-        if (vehicle.description !== undefined) updatePayload.description = vehicle.description;
-        if (vehicle.photoUrl !== undefined) updatePayload.photo_url = vehicle.photoUrl;
-
-        await supabase.from('vehicles').update(updatePayload).eq('id', id);
-      } catch {
-        // Fallback
-      }
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
     }
 
-    try {
-      const res = await fetch(`/api/vehicles/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(vehicle),
-      });
-      if (res.ok) return await res.json();
-    } catch {}
-    return {
-      id,
-      userId: currentUserId,
-      type: vehicle.type || 'Carro',
-      brand: vehicle.brand || '',
-      model: vehicle.model || '',
-      year: vehicle.year || 2020,
-      color: vehicle.color || '',
-      category: vehicle.category,
-      plate: vehicle.plate,
-      description: vehicle.description || '',
-      photoUrl: vehicle.photoUrl,
-      photos: vehicle.photos,
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar sessão: ${sessionError.message}`);
+    }
+
+    const authenticatedUserId = sessionData?.session?.user?.id;
+    if (!authenticatedUserId) {
+      throw new Error('Usuário não autenticado. Faça login para editar seu veículo.');
+    }
+
+    const dbPayload = vehicleToDbVehicle({
+      ...vehicle,
+      userId: authenticatedUserId,
+    });
+
+    const updateFields: Record<string, unknown> = {
+      type: dbPayload.type,
+      brand: dbPayload.brand,
+      model: dbPayload.model,
+      year: dbPayload.year,
+      color: dbPayload.color,
+      plate: dbPayload.plate,
+      category: dbPayload.category,
+      description: dbPayload.description,
+      photo_url: dbPayload.photo_url,
+      updated_at: new Date().toISOString(),
     };
+
+    const { data, error } = await supabase
+      .from('vehicles')
+      .update(updateFields)
+      .eq('id', id)
+      .eq('user_id', authenticatedUserId)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(`Erro ao atualizar veículo no Supabase: ${error.message}`);
+    }
+
+    const updatedVehicle = dbVehicleToVehicle(data as DbVehicleRow);
+    if (vehicle.photos && vehicle.photos.length > 0) {
+      updatedVehicle.photos = vehicle.photos;
+    }
+    return updatedVehicle;
+  },
+
+  async deleteVehicle(id: string): Promise<{ success: boolean }> {
+    if (!supabase) {
+      throw new Error('Supabase client não está configurado.');
+    }
+
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      throw new Error(`Erro ao verificar sessão: ${sessionError.message}`);
+    }
+
+    const authenticatedUserId = sessionData?.session?.user?.id;
+    if (!authenticatedUserId) {
+      throw new Error('Usuário não autenticado. Faça login para remover seu veículo.');
+    }
+
+    const { error } = await supabase
+      .from('vehicles')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', authenticatedUserId);
+
+    if (error) {
+      throw new Error(`Erro ao excluir veículo no Supabase: ${error.message}`);
+    }
+
+    return { success: true };
   },
 
   // Notifications
