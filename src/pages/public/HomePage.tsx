@@ -82,13 +82,13 @@ export const HomePage: React.FC<HomePageProps> = ({
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-[#181818]">
             <div className="flex items-center gap-3.5">
               <img
-                src={user.avatarUrl}
-                alt={user.name}
+                src={user?.avatarUrl || user?.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'}
+                alt={user?.name || 'Participante'}
                 className="w-12 h-12 rounded-full object-cover border-2 border-[#FF1A2D] shadow-md shadow-red-950/40"
               />
               <div>
                 <h3 className="text-base sm:text-lg font-bold text-white font-heading">
-                  Olá, {user.name.split(' ')[0]}!
+                  Olá, {(user?.name || 'Visitante').split(' ')[0]}!
                 </h3>
                 <p className="text-xs text-gray-400">Seja bem-vindo de volta à PX CUSTOM!</p>
               </div>
@@ -96,7 +96,7 @@ export const HomePage: React.FC<HomePageProps> = ({
 
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-semibold text-gray-400 bg-[#141414] px-3 py-1.5 rounded-lg border border-[#222222]">
-                📍 {user.city} - {user.state}
+                📍 {user?.city || 'Manhuaçu'} - {user?.state || 'MG'}
               </span>
             </div>
           </div>
@@ -122,7 +122,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <Car className="w-5 h-5" />
               </div>
               <span className="text-xs font-bold text-gray-200">Meus Veículos</span>
-              <span className="text-[10px] text-gray-400">{vehicles.length} cadastrados</span>
+              <span className="text-[10px] text-gray-400">{(vehicles || []).length} cadastrados</span>
             </button>
 
             <button
@@ -167,8 +167,9 @@ export const HomePage: React.FC<HomePageProps> = ({
 
         {/* Event Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {events.map((event) => {
+          {(events || []).map((event) => {
             const isLive = event.status === 'EM_ANDAMENTO';
+            const dateParts = (event.dateBadge || 'PX CUSTOM').split(' ');
             return (
               <div
                 key={event.id}
@@ -187,10 +188,10 @@ export const HomePage: React.FC<HomePageProps> = ({
                     {/* Date Badge (Top Left - e.g. 15 NOV) */}
                     <div className="absolute top-3 left-3 bg-black/85 backdrop-blur-md border border-[#2a2a2a] rounded-xl px-3 py-1.5 text-center shadow-lg">
                       <span className="block text-xs font-black text-[#FF1A2D] uppercase leading-tight font-heading">
-                        {event.dateBadge.split(' ')[0]}
+                        {dateParts[0] || 'PX'}
                       </span>
                       <span className="block text-[10px] font-bold text-white uppercase tracking-wider">
-                        {event.dateBadge.split(' ')[1]}
+                        {dateParts[1] || 'CUSTOM'}
                       </span>
                     </div>
 

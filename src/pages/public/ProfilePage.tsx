@@ -1,26 +1,46 @@
-import React, { useState } from 'react';
-import { User, Mail, Phone, MapPin, Shield, LogOut, Check, Ticket, Car, Bell, Camera, Trash2, Upload } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  User,
+  Mail,
+  Phone,
+  MapPin,
+  Shield,
+  LogOut,
+  Check,
+  Ticket,
+  Car,
+  Bell,
+  Camera,
+  Trash2,
+  Upload,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
 import { UserProfile, MediaItem } from '../../types';
 import { MediaUploader } from '../../components/media/MediaUploader';
+import { useAuth } from '../../context/AuthContext';
 
 interface ProfilePageProps {
   user: UserProfile;
   onUpdateUser: (updated: Partial<UserProfile>) => void;
   onNavigate: (tab: string) => void;
+  onLogout?: () => void;
 }
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({
   user,
   onUpdateUser,
   onNavigate,
+  onLogout,
 }) => {
-  const [name, setName] = useState(user.name);
-  const [email, setEmail] = useState(user.email);
-  const [phone, setPhone] = useState(user.phone);
-  const [city, setCity] = useState(user.city);
-  const [state, setState] = useState(user.state);
+  const { updateProfile, logout } = useAuth();
+  const [name, setName] = useState(user?.name || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [phone, setPhone] = useState(user?.phone || '');
+  const [city, setCity] = useState(user?.city || 'Manhuaçu');
+  const [state, setState] = useState(user?.state || 'MG');
   const [avatarMedia, setAvatarMedia] = useState<MediaItem[]>(
-    user.avatarUrl
+    user?.avatarUrl
       ? [{
           id: 'avatar-current',
           url: user.avatarUrl,
@@ -31,38 +51,86 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         }]
       : []
   );
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showAvatarUploader, setShowAvatarUploader] = useState(false);
 
-  const handleAvatarChange = (items: MediaItem[]) => {
+  useEffect(() => {
+    if (user) {
+      setName(user.name || '');
+      setEmail(user.email || '');
+      setPhone(user.phone || '');
+      setCity(user.city || 'Manhuaçu');
+      setState(user.state || 'MG');
+      if (user.avatarUrl) {
+        setAvatarMedia([{
+          id: 'avatar-current',
+          url: user.avatarUrl,
+          fileName: 'foto-perfil.jpg',
+          fileSize: 180 * 1024,
+          mimeType: 'image/jpeg',
+          isPrimary: true,
+        }]);
+      }
+    }
+  }, [user]);
+
+  const handleAvatarChange = async (items: MediaItem[]) => {
     setAvatarMedia(items);
     if (items.length > 0) {
-      onUpdateUser({ avatarUrl: items[0].url, avatarMedia: items[0] });
+      const newAvatarUrl = items[0].url;
+      onUpdateUser({ avatarUrl: newAvatarUrl, avatarMedia: items[0] });
+      await updateProfile({ avatarUrl: newAvatarUrl });
     }
   };
 
-  const handleRemoveAvatar = () => {
+  const handleRemoveAvatar = async () => {
+    const fallbackAvatar = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80';
     setAvatarMedia([]);
     onUpdateUser({
-      avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
+      avatarUrl: fallbackAvatar,
       avatarMedia: undefined,
     });
+    await updateProfile({ avatarUrl: fallbackAvatar });
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSaving(true);
+    setErrorMsg(null);
+
     const updatedAvatarUrl = avatarMedia[0]?.url || user.avatarUrl;
-    onUpdateUser({
+
+    const payload: Partial<UserProfile> = {
       name,
-      email,
       phone,
       city,
       state,
       avatarUrl: updatedAvatarUrl,
       avatarMedia: avatarMedia[0],
-    });
+    };
+
+    const { error } = await updateProfile(payload);
+    setSaving(false);
+
+    if (error) {
+      setErrorMsg(`Erro ao salvar no banco de dados: ${error}`);
+      return;
+    }
+
+    onUpdateUser(payload);
     setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setTimeout(() => setSaved(false), 3000);
+  };
+
+  const handleSignOut = async () => {
+    if (onLogout) {
+      onLogout();
+    } else {
+      await logout();
+      onNavigate('home');
+    }
   };
 
   const currentAvatarDisplay = avatarMedia[0]?.url || user.avatarUrl;
@@ -71,13 +139,25 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10 space-y-8 animate-fadeIn">
       
       {/* Header */}
-      <div>
-        <h1 className="text-3xl sm:text-4xl font-black text-white uppercase font-heading">
-          Meu Perfil
-        </h1>
-        <p className="text-xs sm:text-sm text-gray-400">
-          Gerencie seus dados de participante, foto oficial e credenciais da PX CUSTOM
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-black text-white uppercase font-heading">
+            Meu Perfil
+          </h1>
+          <p className="text-xs sm:text-sm text-gray-400">
+            Gerencie seus dados de participante, foto oficial e credenciais da PX CUSTOM
+          </p>
+        </div>
+
+        {/* Botão Sair da Conta */}
+        <button
+          onClick={handleSignOut}
+          className="self-start sm:self-auto px-3.5 py-2 rounded-xl bg-[#141414] hover:bg-red-950/30 border border-[#242424] hover:border-red-500/40 text-xs font-bold text-gray-300 hover:text-red-400 transition flex items-center gap-2 cursor-pointer"
+          title="Encerrar sessão nesta máquina"
+        >
+          <LogOut className="w-3.5 h-3.5 text-[#FF1A2D]" />
+          <span>Sair da Conta</span>
+        </button>
       </div>
 
       {/* User Card with Photo Change Controls */}
@@ -145,18 +225,20 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               <Car className="w-3.5 h-3.5 text-[#FF1A2D]" />
               <span>Veículos</span>
             </button>
-            <button
-              onClick={() => onNavigate('px-control')}
-              className="px-3 py-1.5 rounded-lg bg-[#FF1A2D]/15 hover:bg-[#FF1A2D]/25 border border-[#FF1A2D]/40 text-xs font-bold text-[#FF1A2D] flex items-center gap-1.5 cursor-pointer"
-            >
-              <Shield className="w-3.5 h-3.5" />
-              <span>Painel PX CONTROL</span>
-            </button>
+            {(user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') && (
+              <button
+                onClick={() => onNavigate('px-control')}
+                className="px-3 py-1.5 rounded-lg bg-[#FF1A2D]/15 hover:bg-[#FF1A2D]/25 border border-[#FF1A2D]/40 text-xs font-bold text-[#FF1A2D] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>Painel PX CONTROL</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Profile Avatar Uploader Drawer (Item 3 da Especificação) */}
+      {/* Profile Avatar Uploader Drawer */}
       {showAvatarUploader && (
         <div className="bg-[#0e0e0e] border border-[#222222] rounded-2xl p-5 space-y-3">
           <div className="flex items-center justify-between pb-2 border-b border-[#181818]">
@@ -166,7 +248,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             <button
               type="button"
               onClick={() => setShowAvatarUploader(false)}
-              className="text-xs text-gray-400 hover:text-white"
+              className="text-xs text-gray-400 hover:text-white cursor-pointer"
             >
               Fechar
             </button>
@@ -181,7 +263,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             resourceId={user.id}
             userId={user.id}
             label="Selecione sua foto de participante"
-            hint="Formatos aceitos: JPG, PNG ou WEBP até 5 MB. No celular, selecione da galeria ou use a câmera frontal."
+            hint="Formatos aceitos: JPG, PNG ou WEBP até 5 MB. A imagem é vinculada ao seu usuário oficial no Supabase Storage."
             allowCamera={true}
           />
         </div>
@@ -193,11 +275,19 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           Informações Pessoais
         </h3>
 
+        {errorMsg && (
+          <p className="text-xs text-red-400 bg-red-950/30 border border-red-500/40 p-2.5 rounded-lg flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-[#FF1A2D]" />
+            <span>{errorMsg}</span>
+          </p>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
           <div>
             <label className="block text-gray-400 mb-1">Nome Completo</label>
             <input
               type="text"
+              required
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full bg-[#141414] border border-[#262626] rounded-lg p-2.5 text-white focus:outline-none focus:border-[#FF1A2D]"
@@ -205,12 +295,12 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
 
           <div>
-            <label className="block text-gray-400 mb-1">E-mail</label>
+            <label className="block text-gray-400 mb-1">E-mail (Supabase Auth)</label>
             <input
               type="email"
+              disabled
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-[#141414] border border-[#262626] rounded-lg p-2.5 text-white focus:outline-none focus:border-[#FF1A2D]"
+              className="w-full bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg p-2.5 text-gray-400 cursor-not-allowed"
             />
           </div>
 
@@ -220,6 +310,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
               type="text"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
+              placeholder="(33) 99999-9999"
               className="w-full bg-[#141414] border border-[#262626] rounded-lg p-2.5 text-white focus:outline-none focus:border-[#FF1A2D]"
             />
           </div>
@@ -229,7 +320,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             <input
               type="text"
               disabled
-              value={user.cpf}
+              value={user.cpf || 'Não informado'}
               className="w-full bg-[#0a0a0a] border border-[#1f1f1f] rounded-lg p-2.5 text-gray-400 cursor-not-allowed"
             />
           </div>
@@ -258,16 +349,24 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         {saved && (
           <p className="text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/40 p-2.5 rounded-lg flex items-center gap-2">
             <Check className="w-4 h-4" />
-            <span>Dados e foto de perfil atualizados com sucesso!</span>
+            <span>Dados e foto de perfil atualizados com sucesso no Supabase!</span>
           </p>
         )}
 
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            className="px-6 py-2.5 rounded-xl bg-[#FF1A2D] hover:bg-[#C90018] text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer"
+            disabled={saving}
+            className="px-6 py-2.5 rounded-xl bg-[#FF1A2D] hover:bg-[#C90018] text-white font-bold text-xs uppercase tracking-wider transition cursor-pointer flex items-center gap-2 disabled:opacity-50"
           >
-            Salvar Alterações
+            {saving ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Salvando...</span>
+              </>
+            ) : (
+              <span>Salvar Alterações</span>
+            )}
           </button>
         </div>
       </form>

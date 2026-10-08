@@ -18,12 +18,12 @@ export const EventsPage: React.FC<EventsPageProps> = ({ events, onSelectEvent })
     { id: 'FINALIZADO', label: 'Finalizados' },
   ];
 
-  const filteredEvents = events.filter((event) => {
+  const filteredEvents = (events || []).filter((event) => {
     const matchesFilter = selectedFilter === 'TODOS' || event.status === selectedFilter;
     const matchesSearch =
-      event.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      event.location.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      event.city.toLowerCase().includes(searchQuery.toLowerCase());
+      (event.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (event.location || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (event.city || '').toLowerCase().includes(searchQuery.toLowerCase());
     return matchesFilter && matchesSearch;
   });
 

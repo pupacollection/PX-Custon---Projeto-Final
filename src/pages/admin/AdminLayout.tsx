@@ -17,9 +17,10 @@ import {
   ChevronDown,
   Database,
   Palette,
+  LogOut,
 } from 'lucide-react';
 import { PxLogo } from '../../components/common/PxLogo';
-import { CURRENT_USER } from '../../services/mockData';
+import { useAuth } from '../../context/AuthContext';
 
 interface AdminLayoutProps {
   currentSection: string;
@@ -38,6 +39,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   onSelectEvent,
   children,
 }) => {
+  const { profile, logout } = useAuth();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const menuItems = [
@@ -90,7 +92,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </nav>
 
         {/* Sidebar Footer with System Version */}
-        <div className="p-4 border-t border-[#181818] space-y-3 bg-[#050505]">
+        <div className="p-4 border-t border-[#181818] space-y-2 bg-[#050505]">
           <button
             onClick={onExitToPublic}
             className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-[#141414] hover:bg-[#1c1c1c] border border-[#242424] text-xs font-bold text-gray-300 hover:text-white transition cursor-pointer"
@@ -99,9 +101,20 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
             <span>Voltar ao Site Oficial</span>
           </button>
 
-          <div className="flex items-center justify-between px-1 text-[11px] text-gray-500">
+          <button
+            onClick={async () => {
+              await logout();
+              onExitToPublic();
+            }}
+            className="w-full flex items-center justify-center gap-2 py-1.5 px-3 rounded-xl bg-transparent hover:bg-red-950/20 text-xs font-semibold text-red-400 hover:text-red-300 transition cursor-pointer"
+          >
+            <LogOut className="w-3 h-3 text-[#FF1A2D]" />
+            <span>Encerrar Sessão</span>
+          </button>
+
+          <div className="flex items-center justify-between px-1 text-[11px] text-gray-500 pt-1">
             <span>PX CUSTOM</span>
-            <span className="font-mono text-[#FF1A2D]">Sistema v1.0</span>
+            <span className="font-mono text-[#FF1A2D]">PX CONTROL v1.0</span>
           </div>
         </div>
       </aside>
@@ -208,16 +221,22 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
           {/* Right Operator profile info */}
           <div className="flex items-center gap-3">
             <div className="text-right hidden sm:block">
-              <span className="block text-xs font-bold text-white">{CURRENT_USER.name}</span>
+              <span className="block text-xs font-bold text-white">{profile?.name || 'Administrador'}</span>
               <span className="block text-[10px] text-[#FF1A2D] font-mono font-bold">
-                {CURRENT_USER.role}
+                {profile?.role || 'SUPER_ADMIN'}
               </span>
             </div>
-            <img
-              src={CURRENT_USER.avatarUrl}
-              alt={CURRENT_USER.name}
-              className="w-8 h-8 rounded-full border border-[#FF1A2D]"
-            />
+            {profile?.avatarUrl ? (
+              <img
+                src={profile.avatarUrl}
+                alt={profile.name || 'Admin'}
+                className="w-8 h-8 rounded-full border border-[#FF1A2D] object-cover"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-[#FF1A2D]/20 text-[#FF1A2D] border border-[#FF1A2D] flex items-center justify-center font-bold text-xs">
+                {(profile?.name || 'A').charAt(0).toUpperCase()}
+              </div>
+            )}
           </div>
         </header>
 

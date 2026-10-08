@@ -1,41 +1,17 @@
-// PX CUSTOM - Service Worker
-const CACHE_NAME = 'px-custom-v1';
-const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/logo.svg',
-  '/favicon.svg'
-];
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
-    })
-  );
+// PX CUSTOM — Service Worker (Safe Mode)
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // Limpa qualquer cache antigo para evitar scripts defasados ou conflito com o Vite
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
   );
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  // Pass API requests directly to network
-  if (event.request.url.includes('/api/')) {
-    return;
-  }
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      return cached || fetch(event.request).catch(() => caches.match('/'));
-    })
-  );
+// Em desenvolvimento ou em requisições de módulos/Vite, nunca interceptar
+self.addEventListener('fetch', () => {
+  return;
 });

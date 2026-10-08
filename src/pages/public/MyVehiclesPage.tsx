@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Car, Plus, Trash2, Tag, Calendar, Palette, X, ShieldAlert, Images, Eye, Edit } from 'lucide-react';
 import { Vehicle, MediaItem } from '../../types';
 import { MediaUploader } from '../../components/media/MediaUploader';
+import { useAuth } from '../../context/AuthContext';
 
 interface MyVehiclesPageProps {
   vehicles: Vehicle[];
@@ -16,6 +17,7 @@ export const MyVehiclesPage: React.FC<MyVehiclesPageProps> = ({
   onUpdateVehicle,
   onDeleteVehicle,
 }) => {
+  const { user } = useAuth();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [brand, setBrand] = useState('');
@@ -86,6 +88,7 @@ export const MyVehiclesPage: React.FC<MyVehiclesPageProps> = ({
       description,
       photoUrl: mainPhotoUrl,
       photos: vehicleMedia.length > 0 ? vehicleMedia : undefined,
+      userId: user?.id || '',
     };
 
     if (editingVehicle && onUpdateVehicle) {
@@ -132,7 +135,7 @@ export const MyVehiclesPage: React.FC<MyVehiclesPageProps> = ({
 
       {/* Vehicle Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {vehicles.map((v) => {
+        {(vehicles || []).map((v) => {
           const allPhotos = v.photos || (v.photoUrl ? [{ id: 'p1', url: v.photoUrl, fileName: 'foto-principal.jpg', fileSize: 500 * 1024, mimeType: 'image/jpeg', isPrimary: true }] : []);
           const primary = allPhotos.find(p => p.isPrimary) || allPhotos[0];
 
@@ -368,7 +371,7 @@ export const MyVehiclesPage: React.FC<MyVehiclesPageProps> = ({
                   uploadType="vehicle_photos"
                   resourceId={editingVehicle?.id || 'veh-new'}
                   vehicleId={editingVehicle?.id || 'veh-new'}
-                  userId="usr-deivid-01"
+                  userId={user?.id || ''}
                   label="Fotos do Veículo (1 Principal + Adicionais)"
                   hint="Adicione fotos de frente, traseira, rodas, interior e som. No celular, selecione da galeria ou tire foto pela câmera."
                   allowCamera={true}

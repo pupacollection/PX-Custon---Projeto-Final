@@ -10,10 +10,10 @@ export const AdminVehiclesPage: React.FC<{
   const [viewingVehicle, setViewingVehicle] = useState<Vehicle | null>(null);
   const [fullPhotoUrl, setFullPhotoUrl] = useState<string | null>(null);
 
-  const filtered = vehicles.filter(
+  const filtered = (vehicles || []).filter(
     (v) =>
-      v.brand.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      v.model.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      v.brand?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      v.model?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       v.category?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 

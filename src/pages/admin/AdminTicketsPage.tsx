@@ -7,11 +7,11 @@ export const AdminTicketsPage: React.FC<{ tickets: Ticket[] }> = ({ tickets }) =
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
 
-  const filteredTickets = tickets.filter(
+  const filteredTickets = (tickets || []).filter(
     (t) =>
-      t.buyerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.batchName.toLowerCase().includes(searchTerm.toLowerCase())
+      t.buyerName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      t.code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      t.batchName?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (

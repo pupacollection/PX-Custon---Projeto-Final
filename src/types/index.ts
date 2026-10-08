@@ -116,9 +116,28 @@ export interface UserProfile {
   city: string;
   state: string;
   avatarUrl: string;
+  avatar_url?: string;
   avatarMedia?: MediaItem;
   role: 'USER' | 'ADMIN' | 'SUPER_ADMIN' | 'CHECKIN_OPERATOR' | 'FINANCE' | 'SUPPORT';
+  is_active?: boolean;
   createdAt: string;
+  created_at?: string;
+}
+
+export interface RegisterData {
+  name: string;
+  email: string;
+  password: string;
+  phone?: string;
+  cpf?: string;
+  city?: string;
+  state?: string;
+}
+
+export interface LoginCredentials {
+  email: string;
+  password: string;
+  rememberMe?: boolean;
 }
 
 export interface CheckInLog {

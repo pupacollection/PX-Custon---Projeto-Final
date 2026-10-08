@@ -1,12 +1,16 @@
 import { EventItem, Ticket, Vehicle, CheckInLog, DashboardStats, MercadoPagoConfig, NotificationItem } from '../types';
 import { INITIAL_EVENTS, INITIAL_TICKETS, INITIAL_VEHICLES, INITIAL_DASHBOARD_STATS, INITIAL_MERCADO_PAGO_CONFIG, INITIAL_NOTIFICATIONS } from './mockData';
+import { supabase } from '../lib/supabase';
 
 export const api = {
   // Events
   async getEvents(): Promise<EventItem[]> {
     try {
       const res = await fetch('/api/events');
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const json = await res.json();
+        return Array.isArray(json) ? json : INITIAL_EVENTS;
+      }
     } catch {}
     return INITIAL_EVENTS;
   },
@@ -51,7 +55,10 @@ export const api = {
   async getTickets(): Promise<Ticket[]> {
     try {
       const res = await fetch('/api/tickets');
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const json = await res.json();
+        return Array.isArray(json) ? json : INITIAL_TICKETS;
+      }
     } catch {}
     return INITIAL_TICKETS;
   },
@@ -151,15 +158,88 @@ export const api = {
   },
 
   // Vehicles
-  async getVehicles(): Promise<Vehicle[]> {
+  async getVehicles(userId?: string): Promise<Vehicle[]> {
+    if (supabase && userId) {
+      try {
+        const { data, error } = await supabase
+          .from('vehicles')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false });
+
+        if (!error && data && data.length > 0) {
+          return data.map((d) => ({
+            id: d.id,
+            userId: d.user_id,
+            type: d.type || 'Carro',
+            brand: d.brand,
+            model: d.model,
+            year: d.year,
+            color: d.color,
+            plate: d.plate,
+            category: d.category || 'Rebaixado',
+            description: d.description || '',
+            photoUrl: d.photo_url || undefined,
+          }));
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
     try {
       const res = await fetch('/api/vehicles');
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const json = await res.json();
+        return Array.isArray(json) ? json : INITIAL_VEHICLES;
+      }
     } catch {}
     return INITIAL_VEHICLES;
   },
 
   async addVehicle(vehicle: Partial<Vehicle>): Promise<Vehicle> {
+    const currentUserId = vehicle.userId || '';
+
+    if (supabase && currentUserId) {
+      try {
+        const { data, error } = await supabase
+          .from('vehicles')
+          .insert({
+            user_id: currentUserId,
+            brand: vehicle.brand || '',
+            model: vehicle.model || '',
+            year: vehicle.year || 2020,
+            color: vehicle.color || '',
+            type: vehicle.type || 'Carro',
+            category: vehicle.category || 'Rebaixado',
+            plate: vehicle.plate || null,
+            description: vehicle.description || null,
+            photo_url: vehicle.photoUrl || null,
+          })
+          .select()
+          .single();
+
+        if (!error && data) {
+          return {
+            id: data.id,
+            userId: data.user_id,
+            type: data.type || 'Carro',
+            brand: data.brand,
+            model: data.model,
+            year: data.year,
+            color: data.color,
+            plate: data.plate,
+            category: data.category || 'Rebaixado',
+            description: data.description || '',
+            photoUrl: data.photo_url,
+            photos: vehicle.photos,
+          };
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
     try {
       const res = await fetch('/api/vehicles', {
         method: 'POST',
@@ -170,7 +250,7 @@ export const api = {
     } catch {}
     return {
       id: `veh-${Date.now()}`,
-      userId: 'usr-deivid-01',
+      userId: currentUserId,
       type: vehicle.type || 'Carro',
       brand: vehicle.brand || 'Chevrolet',
       model: vehicle.model || 'Classic',
@@ -184,6 +264,26 @@ export const api = {
   },
 
   async updateVehicle(id: string, vehicle: Partial<Vehicle>): Promise<Vehicle> {
+    const currentUserId = vehicle.userId || '';
+
+    if (supabase) {
+      try {
+        const updatePayload: Record<string, unknown> = {};
+        if (vehicle.brand !== undefined) updatePayload.brand = vehicle.brand;
+        if (vehicle.model !== undefined) updatePayload.model = vehicle.model;
+        if (vehicle.year !== undefined) updatePayload.year = vehicle.year;
+        if (vehicle.color !== undefined) updatePayload.color = vehicle.color;
+        if (vehicle.category !== undefined) updatePayload.category = vehicle.category;
+        if (vehicle.plate !== undefined) updatePayload.plate = vehicle.plate;
+        if (vehicle.description !== undefined) updatePayload.description = vehicle.description;
+        if (vehicle.photoUrl !== undefined) updatePayload.photo_url = vehicle.photoUrl;
+
+        await supabase.from('vehicles').update(updatePayload).eq('id', id);
+      } catch {
+        // Fallback
+      }
+    }
+
     try {
       const res = await fetch(`/api/vehicles/${id}`, {
         method: 'PUT',
@@ -194,7 +294,7 @@ export const api = {
     } catch {}
     return {
       id,
-      userId: 'usr-deivid-01',
+      userId: currentUserId,
       type: vehicle.type || 'Carro',
       brand: vehicle.brand || '',
       model: vehicle.model || '',
@@ -212,7 +312,10 @@ export const api = {
   async getNotifications(): Promise<NotificationItem[]> {
     try {
       const res = await fetch('/api/notifications');
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const json = await res.json();
+        return Array.isArray(json) ? json : INITIAL_NOTIFICATIONS;
+      }
     } catch {}
     return INITIAL_NOTIFICATIONS;
   },

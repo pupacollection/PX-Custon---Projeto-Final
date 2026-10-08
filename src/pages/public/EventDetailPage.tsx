@@ -270,11 +270,11 @@ export const EventDetailPage: React.FC<EventDetailPageProps> = ({
               Galeria de Edições Anteriores
             </h3>
             <span className="text-xs text-gray-400">
-              {event.gallery.length} fotos • Clique para ampliar
+              {(event.gallery || []).length} fotos • Clique para ampliar
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-            {event.gallery.map((img, idx) => (
+            {(event.gallery || []).map((img, idx) => (
               <div
                 key={idx}
                 onClick={() => setLightboxIndex(idx)}
@@ -297,7 +297,7 @@ export const EventDetailPage: React.FC<EventDetailPageProps> = ({
       )}
 
       {/* Lightbox Modal for Event Gallery */}
-      {lightboxIndex !== null && (
+      {lightboxIndex !== null && event.gallery && event.gallery[lightboxIndex] && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4">
           <button
             onClick={() => setLightboxIndex(null)}
@@ -312,7 +312,7 @@ export const EventDetailPage: React.FC<EventDetailPageProps> = ({
             <button
               onClick={() =>
                 setLightboxIndex((prev) =>
-                  prev !== null && prev > 0 ? prev - 1 : event.gallery.length - 1
+                  prev !== null && prev > 0 ? prev - 1 : (event.gallery?.length || 1) - 1
                 )
               }
               className="absolute left-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-[#141414]/80 hover:bg-[#202020] border border-[#2a2a2a] text-white cursor-pointer z-10 transition-transform hover:scale-110"
@@ -345,7 +345,7 @@ export const EventDetailPage: React.FC<EventDetailPageProps> = ({
             <button
               onClick={() =>
                 setLightboxIndex((prev) =>
-                  prev !== null && prev < event.gallery.length - 1 ? prev + 1 : 0
+                  prev !== null && prev < (event.gallery?.length || 1) - 1 ? prev + 1 : 0
                 )
               }
               className="absolute right-4 top-1/2 -translate-y-1/2 p-3 rounded-full bg-[#141414]/80 hover:bg-[#202020] border border-[#2a2a2a] text-white cursor-pointer z-10 transition-transform hover:scale-110"

@@ -35,7 +35,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({
       </div>
 
       <div className="space-y-3">
-        {notifications.map((notif) => {
+        {(notifications || []).map((notif) => {
           return (
             <div
               key={notif.id}

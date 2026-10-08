@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { Shield, ShieldCheck, UserPlus, Trash2, Key, Check } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Shield, ShieldCheck, UserPlus, Trash2, Key, Check, RefreshCw } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
 
 interface AdminUser {
   id: string;
@@ -50,6 +51,38 @@ export const AdminAdminsPage: React.FC = () => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<AdminUser['role']>('CHECKIN_OPERATOR');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    async function loadDbAdmins() {
+      if (!supabase) return;
+      try {
+        setLoading(true);
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('role', ['SUPER_ADMIN', 'ADMIN', 'CHECKIN_OPERATOR', 'FINANCE', 'SUPPORT'])
+          .order('created_at', { ascending: false });
+
+        if (!error && data && data.length > 0) {
+          const mapped: AdminUser[] = data.map((d) => ({
+            id: d.id,
+            name: d.name || 'Administrador PX',
+            email: d.email || '',
+            role: d.role as AdminUser['role'],
+            active: d.is_active !== false,
+            assignedAt: d.created_at ? new Date(d.created_at).toLocaleDateString('pt-BR') : '2025',
+          }));
+          setAdmins(mapped);
+        }
+      } catch {
+        // Mantém fallback
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadDbAdmins();
+  }, []);
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,9 +1,35 @@
-// PX CUSTOM — Supabase Integration Client & Storage Facade
+// PX CUSTOM — Supabase Integration Client & Safe Config
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { getSupabaseStorageConfig } from './supabaseStorage';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const rawUrl = typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL ? import.meta.env.VITE_SUPABASE_URL : '';
+const rawAnonKey = typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY ? import.meta.env.VITE_SUPABASE_ANON_KEY : '';
+
+// Validação segura para evitar crash com URLs de placeholder ou inválidas
+export const isSupabaseConfigured = Boolean(
+  rawUrl &&
+  rawAnonKey &&
+  rawUrl.startsWith('http') &&
+  !rawUrl.includes('your-project.supabase.co')
+);
+
+let client: SupabaseClient | null = null;
+
+if (isSupabaseConfigured) {
+  try {
+    client = createClient(rawUrl, rawAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+    });
+  } catch (err) {
+    console.warn('[PX CUSTOM] Erro ao instanciar Supabase Client:', err);
+    client = null;
+  }
+}
+
+export const supabase: SupabaseClient | null = client;
+export const supabaseConfigured: boolean = Boolean(client);
 
 export interface SupabaseConfigState {
   isConfigured: boolean;
@@ -12,42 +38,20 @@ export interface SupabaseConfigState {
 }
 
 export const getSupabaseConfig = (): SupabaseConfigState => {
-  const url = import.meta.env.VITE_SUPABASE_URL || null;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || null;
-
   return {
-    isConfigured: Boolean(url && anonKey),
-    url,
-    hasAnonKey: Boolean(anonKey),
+    isConfigured: Boolean(client),
+    url: isSupabaseConfigured ? rawUrl : null,
+    hasAnonKey: isSupabaseConfigured && Boolean(rawAnonKey),
   };
 };
-
-/**
- * Instância oficial do cliente Supabase para o Frontend do PX CUSTOM.
- * Utiliza estritamente a chave anônima (VITE_SUPABASE_ANON_KEY).
- * NUNCA utilize service_role, secrets ou tokens administrativos no client-side.
- */
-export const supabase: SupabaseClient | null =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: true,
-          autoRefreshToken: true,
-        },
-      })
-    : null;
 
 export function getSupabaseClient(): SupabaseClient | null {
   return supabase;
 }
 
-// Informational helper for PX CONTROL admin settings
 export const SUPABASE_STATUS = {
-  configured: Boolean(supabaseUrl && supabaseAnonKey),
-  message: Boolean(supabaseUrl && supabaseAnonKey)
+  configured: Boolean(client),
+  message: Boolean(client)
     ? 'Supabase Conectado (Armazenamento permanente e Auth ativado)'
-    : 'Modo de demonstração: Supabase Storage não conectado. Imagens salvas localmente nesta sessão.',
+    : 'Modo de demonstração: Supabase não conectado neste ambiente. Funcionalidades públicas operando normalmente.',
 };
-
-export * from './supabaseStorage';
-

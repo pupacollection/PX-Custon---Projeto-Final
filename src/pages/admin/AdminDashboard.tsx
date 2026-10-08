@@ -180,7 +180,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* X Axis Labels */}
             <div className="flex justify-between text-[11px] text-gray-500 font-mono pt-3 border-t border-[#181818]">
-              {stats.salesByDay.map((d) => (
+              {(stats.salesByDay || []).map((d) => (
                 <span key={d.date}>{d.date}</span>
               ))}
             </div>
@@ -284,7 +284,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <div className="h-56 w-full flex flex-col justify-end">
             <div className="flex items-end justify-between h-40 gap-2 sm:gap-3 px-2">
-              {stats.salesByDay.map((d, idx) => {
+              {(stats.salesByDay || []).map((d, idx) => {
                 const heightPct = Math.min(100, Math.max(15, (d.revenue / 7000) * 100));
                 return (
                   <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
@@ -302,7 +302,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* X Labels */}
             <div className="flex justify-between text-[11px] text-gray-500 font-mono pt-3 border-t border-[#181818]">
-              {stats.salesByDay.map((d) => (
+              {(stats.salesByDay || []).map((d) => (
                 <span key={d.date}>{d.date}</span>
               ))}
             </div>
@@ -484,7 +484,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           <div className="space-y-3">
-            {stats.recentCheckins.slice(0, 3).map((log) => (
+            {(stats.recentCheckins || []).slice(0, 3).map((log) => (
               <div
                 key={log.id}
                 className="p-3 rounded-xl bg-[#121212] border border-[#1c1c1c] flex items-center justify-between gap-3"

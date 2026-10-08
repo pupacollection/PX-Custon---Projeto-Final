@@ -1,8 +1,22 @@
-import React, { useState } from 'react';
-import { Bell, Search, Shield, User, Menu, X, Ticket, Car, Compass } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  Bell,
+  Search,
+  Shield,
+  User,
+  Menu,
+  X,
+  Ticket,
+  Car,
+  Compass,
+  LogIn,
+  LogOut,
+  ChevronDown,
+  Sparkles,
+} from 'lucide-react';
 import { PxLogo } from './PxLogo';
 import { PWAInstallButton } from './PWAInstallButton';
-import { CURRENT_USER } from '../../services/mockData';
+import { useAuth } from '../../context/AuthContext';
 
 interface NavbarProps {
   currentTab: string;
@@ -15,9 +29,23 @@ export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   unreadCount = 2,
 }) => {
+  const { isAuthenticated, profile, isAdmin, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Fecha o dropdown de usuário ao clicar fora
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const navLinks = [
     { id: 'home', label: 'Início' },
@@ -26,6 +54,16 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'vehicles', label: 'Meus Veículos' },
     { id: 'profile', label: 'Perfil' },
   ];
+
+  const handleLogout = async () => {
+    setUserMenuOpen(false);
+    setMobileMenuOpen(false);
+    await logout();
+    onNavigate('home');
+  };
+
+  const displayName = profile?.name ? profile.name.split(' ')[0] : 'Conta';
+  const displayAvatar = profile?.avatarUrl || profile?.avatar_url;
 
   return (
     <header className="sticky top-0 z-40 bg-black/95 backdrop-blur-md border-b border-[#181818]">
@@ -83,7 +121,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   />
                   <button
                     onClick={() => setSearchOpen(false)}
-                    className="text-gray-400 hover:text-white text-xs ml-1"
+                    className="text-gray-400 hover:text-white text-xs ml-1 cursor-pointer"
                   >
                     ✕
                   </button>
@@ -116,28 +154,129 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* PWA Install Button */}
             <PWAInstallButton compact />
 
-            {/* Admin Switcher: PX CONTROL */}
+            {/* Admin Switcher: PX CONTROL (Acessível com destaque quando autenticado/admin) */}
             <button
               onClick={() => onNavigate('px-control')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#181818] hover:bg-[#222222] border border-[#262626] hover:border-[#FF1A2D] text-xs font-bold text-gray-200 transition cursor-pointer group shadow-sm"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition cursor-pointer group shadow-sm ${
+                isAdmin
+                  ? 'bg-red-950/30 hover:bg-red-950/50 border-[#FF1A2D]/60 text-white'
+                  : 'bg-[#181818] hover:bg-[#222222] border-[#262626] hover:border-[#FF1A2D] text-gray-200'
+              }`}
               title="Acessar painel administrativo PX CONTROL"
             >
               <Shield className="w-3.5 h-3.5 text-[#FF1A2D] group-hover:scale-110 transition-transform" />
               <span className="hidden sm:inline">PX CONTROL</span>
+              {isAdmin && (
+                <span className="hidden lg:inline px-1.5 py-0.2 rounded bg-[#FF1A2D] text-[9px] font-black text-white">
+                  PRO
+                </span>
+              )}
             </button>
 
-            {/* User Profile Avatar / Entrar */}
-            <button
-              onClick={() => onNavigate('profile')}
-              className="flex items-center gap-2 p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-[#111111] hover:bg-[#181818] border border-[#222222] text-xs font-semibold text-white transition cursor-pointer"
-            >
-              <img
-                src={CURRENT_USER.avatarUrl}
-                alt={CURRENT_USER.name}
-                className="w-6 h-6 rounded-full object-cover border border-[#FF1A2D]"
-              />
-              <span className="hidden lg:inline">{CURRENT_USER.name.split(' ')[0]}</span>
-            </button>
+            {/* User Profile or Entrar */}
+            {isAuthenticated ? (
+              <div className="relative" ref={userMenuRef}>
+                <button
+                  onClick={() => setUserMenuOpen(!userMenuOpen)}
+                  className="flex items-center gap-2 p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-[#111111] hover:bg-[#181818] border border-[#222222] text-xs font-semibold text-white transition cursor-pointer group"
+                >
+                  {displayAvatar ? (
+                    <img
+                      src={displayAvatar}
+                      alt={profile?.name || 'Perfil'}
+                      className="w-6 h-6 rounded-full object-cover border border-[#FF1A2D]"
+                    />
+                  ) : (
+                    <div className="w-6 h-6 rounded-full bg-[#FF1A2D]/20 text-[#FF1A2D] flex items-center justify-center font-bold text-xs border border-[#FF1A2D]">
+                      {displayName.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <span className="hidden lg:inline">{displayName}</span>
+                  <ChevronDown className="w-3 h-3 text-gray-400 group-hover:text-white transition-transform" />
+                </button>
+
+                {/* Dropdown Menu do Usuário */}
+                {userMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-56 bg-[#0c0c0c] border border-[#222222] rounded-2xl shadow-2xl shadow-black/90 py-2 z-50 animate-fadeIn">
+                    <div className="px-3.5 py-2.5 border-b border-[#1c1c1c]">
+                      <p className="text-xs font-bold text-white truncate">{profile?.name || 'Participante'}</p>
+                      <p className="text-[10px] text-gray-400 truncate">{profile?.email}</p>
+                      {isAdmin && (
+                        <span className="inline-block mt-1 px-2 py-0.5 rounded text-[9px] font-black bg-[#FF1A2D]/20 text-[#FF1A2D] border border-[#FF1A2D]/40 uppercase">
+                          {profile?.role}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="py-1">
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onNavigate('profile');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-gray-300 hover:text-white hover:bg-[#161616] transition cursor-pointer text-left"
+                      >
+                        <User className="w-3.5 h-3.5 text-gray-400" />
+                        <span>Meu Perfil</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onNavigate('vehicles');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-gray-300 hover:text-white hover:bg-[#161616] transition cursor-pointer text-left"
+                      >
+                        <Car className="w-3.5 h-3.5 text-gray-400" />
+                        <span>Meus Veículos</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onNavigate('tickets');
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-gray-300 hover:text-white hover:bg-[#161616] transition cursor-pointer text-left"
+                      >
+                        <Ticket className="w-3.5 h-3.5 text-gray-400" />
+                        <span>Meus Ingressos</span>
+                      </button>
+
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            setUserMenuOpen(false);
+                            onNavigate('px-control');
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-bold text-[#FF1A2D] hover:bg-[#FF1A2D]/10 transition cursor-pointer text-left"
+                        >
+                          <Shield className="w-3.5 h-3.5 text-[#FF1A2D]" />
+                          <span>Painel PX CONTROL</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="pt-1 border-t border-[#1c1c1c]">
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/20 transition cursor-pointer text-left"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        <span>Sair da Conta</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => onNavigate('login')}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#FF1A2D] hover:bg-[#D90014] text-xs font-bold text-white transition cursor-pointer shadow-md shadow-red-950/40"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Entrar</span>
+              </button>
+            )}
 
             {/* Mobile Hamburger Menu */}
             <button
@@ -152,7 +291,50 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Mobile Drawer Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-[#080808] border-b border-[#1f1f1f] px-4 pt-3 pb-5 space-y-2">
+        <div className="md:hidden bg-[#080808] border-b border-[#1f1f1f] px-4 pt-3 pb-5 space-y-2 animate-fadeIn">
+          {/* Identificação do Usuário no Mobile */}
+          {isAuthenticated ? (
+            <div className="flex items-center justify-between pb-3 border-b border-[#1a1a1a]">
+              <div className="flex items-center gap-2.5">
+                {displayAvatar ? (
+                  <img
+                    src={displayAvatar}
+                    alt={profile?.name || 'Perfil'}
+                    className="w-9 h-9 rounded-full object-cover border border-[#FF1A2D]"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-[#FF1A2D]/20 text-[#FF1A2D] flex items-center justify-center font-bold text-sm border border-[#FF1A2D]">
+                    {displayName.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div>
+                  <p className="text-xs font-bold text-white">{profile?.name}</p>
+                  <p className="text-[10px] text-gray-400">{profile?.email}</p>
+                </div>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-red-400 hover:text-red-300 font-bold p-1"
+                title="Sair"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="pb-3 border-b border-[#1a1a1a]">
+              <button
+                onClick={() => {
+                  onNavigate('login');
+                  setMobileMenuOpen(false);
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#FF1A2D] text-white text-xs font-bold uppercase tracking-wider"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>Entrar / Cadastrar-se</span>
+              </button>
+            </div>
+          )}
+
           {navLinks.map((link) => (
             <button
               key={link.id}

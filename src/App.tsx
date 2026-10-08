@@ -15,6 +15,8 @@ import { MyTicketsPage } from './pages/public/MyTicketsPage';
 import { MyVehiclesPage } from './pages/public/MyVehiclesPage';
 import { ProfilePage } from './pages/public/ProfilePage';
 import { NotificationsPage } from './pages/public/NotificationsPage';
+import { LoginPage } from './pages/public/LoginPage';
+import { AccessDeniedPage } from './pages/public/AccessDeniedPage';
 
 // PX CONTROL (Admin)
 import { AdminLayout } from './pages/admin/AdminLayout';
@@ -29,14 +31,19 @@ import { AdminAdminsPage } from './pages/admin/AdminAdminsPage';
 import { AdminSupabasePage } from './pages/admin/AdminSupabasePage';
 import { AdminBrandingPage } from './pages/admin/AdminBrandingPage';
 
+import { PxLogo } from './components/common/PxLogo';
+import { useAuth } from './context/AuthContext';
 import { api } from './services/api';
 import { EventItem, Ticket, Vehicle, UserProfile, DashboardStats, NotificationItem } from './types';
-import { CURRENT_USER } from './services/mockData';
 
 export default function App() {
+  const { user, profile, loading: authLoading, isAuthenticated, isAdmin, logout } = useAuth();
+
   // Navigation State
   const [currentView, setCurrentView] = useState<string>('home');
   const [selectedEventSlug, setSelectedEventSlug] = useState<string>('encontro-px-custom');
+  const [loginRedirectTarget, setLoginRedirectTarget] = useState<string>('home');
+  const [loginCustomNotice, setLoginCustomNotice] = useState<string | undefined>(undefined);
   
   // Admin State
   const [adminSection, setAdminSection] = useState<string>('dashboard');
@@ -48,36 +55,71 @@ export default function App() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [user, setUser] = useState<UserProfile>(CURRENT_USER);
 
-  // Loading
-  const [loading, setLoading] = useState(true);
+  // Initial Data Loading
+  const [initialLoading, setInitialLoading] = useState(true);
 
+  // Carrega dados iniciais da aplicação com timeout de segurança
   useEffect(() => {
+    const safetyTimeout = setTimeout(() => {
+      setInitialLoading(false);
+    }, 1500);
+
     async function loadData() {
       try {
         const [evts, tkts, vehs, notifs, st] = await Promise.all([
           api.getEvents(),
           api.getTickets(),
-          api.getVehicles(),
+          api.getVehicles(user?.id),
           api.getNotifications(),
           api.getDashboardStats(),
         ]);
-        setEvents(evts);
-        setTickets(tkts);
-        setVehicles(vehs);
-        setNotifications(notifs);
-        setStats(st);
+        setEvents(Array.isArray(evts) ? evts : []);
+        setTickets(Array.isArray(tkts) ? tkts : []);
+        setVehicles(Array.isArray(vehs) ? vehs : []);
+        setNotifications(Array.isArray(notifs) ? notifs : []);
+        setStats(st || null);
       } catch (err) {
-        console.error('Error loading initial data', err);
+        console.error('Erro ao carregar dados iniciais:', err);
       } finally {
-        setLoading(false);
+        clearTimeout(safetyTimeout);
+        setInitialLoading(false);
       }
     }
     loadData();
-  }, []);
+    return () => clearTimeout(safetyTimeout);
+  }, [user?.id]);
 
+  // Navegação com proteção de rotas (RBAC & Auth Guard)
   const handleNavigate = (view: string) => {
+    // Rotas protegidas que exigem autenticação
+    const protectedUserRoutes = ['tickets', 'vehicles', 'profile', 'checkout'];
+    
+    if (protectedUserRoutes.includes(view) && !isAuthenticated) {
+      setLoginRedirectTarget(view);
+      const labels: Record<string, string> = {
+        tickets: 'seus ingressos digitais',
+        vehicles: 'seus veículos cadastrados',
+        profile: 'seu perfil oficial',
+        checkout: 'concluir sua compra de ingressos',
+      };
+      setLoginCustomNotice(`Faça login ou cadastre-se para acessar ${labels[view] || 'esta área'}.`);
+      setCurrentView('login');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    if (view === 'px-control') {
+      if (!isAuthenticated) {
+        setLoginRedirectTarget('px-control');
+        setLoginCustomNotice('Acesso restrito: Faça login com sua conta administrativa para acessar o PX CONTROL.');
+        setCurrentView('login');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      // Se autenticado, deixa avançar; a verificação de role tratará a renderização (403 se não admin)
+    }
+
     setCurrentView(view);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -90,13 +132,18 @@ export default function App() {
 
   const handleBuyTickets = (slug: string) => {
     setSelectedEventSlug(slug);
-    setCurrentView('checkout');
+    if (!isAuthenticated) {
+      setLoginRedirectTarget('checkout');
+      setLoginCustomNotice('Faça login ou crie sua conta para prosseguir com a compra segura de ingressos.');
+      setCurrentView('login');
+    } else {
+      setCurrentView('checkout');
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleCheckoutSuccess = (newTicket: Ticket) => {
     setTickets((prev) => [newTicket, ...prev]);
-    // Refresh stats and notifications
     api.getDashboardStats().then((st) => setStats(st));
     api.getNotifications().then((notifs) => setNotifications(notifs));
     setCurrentView('tickets');
@@ -104,12 +151,18 @@ export default function App() {
   };
 
   const handleAddVehicle = async (vehData: Partial<Vehicle>) => {
-    const created = await api.addVehicle(vehData);
+    const created = await api.addVehicle({
+      ...vehData,
+      userId: user?.id,
+    });
     setVehicles((prev) => [...prev, created]);
   };
 
   const handleUpdateVehicle = async (id: string, vehData: Partial<Vehicle>) => {
-    const updated = await api.updateVehicle(id, vehData);
+    const updated = await api.updateVehicle(id, {
+      ...vehData,
+      userId: user?.id,
+    });
     setVehicles((prev) => prev.map((v) => (v.id === id ? updated : v)));
   };
 
@@ -127,13 +180,80 @@ export default function App() {
     setEvents((prev) => [created, ...prev]);
   };
 
-  const unreadNotifsCount = notifications.filter((n) => !n.read).length;
-  const currentEvent = events.find((e) => e.slug === selectedEventSlug) || events[0];
+  const handleLoginSuccess = (redirectTarget?: string) => {
+    const target = redirectTarget || loginRedirectTarget || 'home';
+    setLoginRedirectTarget('home');
+    setLoginCustomNotice(undefined);
+    handleNavigate(target);
+  };
+
+  // Carregamento de Inicialização (Zero flash de dados incorretos)
+  if (authLoading || initialLoading) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-4">
+        <div className="text-center space-y-4">
+          <div className="animate-pulse flex items-center justify-center">
+            <PxLogo size="lg" />
+          </div>
+          <div className="flex items-center justify-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-[#FF1A2D] animate-ping" />
+            <span className="text-xs uppercase font-mono tracking-widest text-gray-400">
+              Carregando Ecossistema PX CUSTOM...
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const unreadNotifsCount = (notifications || []).filter((n) => !n.read).length;
+  const currentEvent = (events || []).find((e) => e.slug === selectedEventSlug) || (events && events[0]) || undefined;
+
+  // Objeto de perfil seguro para componentes que demandam UserProfile
+  const activeProfile: UserProfile = profile || {
+    id: user?.id || 'guest',
+    name: 'Visitante',
+    email: user?.email || '',
+    phone: '',
+    cpf: '',
+    city: 'Manhuaçu',
+    state: 'MG',
+    avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80',
+    role: 'USER',
+    createdAt: new Date().toISOString(),
+  };
 
   // ---------------------------------------------------------------------------
-  // 1. PX CONTROL (ADMINISTRATION INTERFACE)
+  // 1. PX CONTROL (ADMINISTRATION INTERFACE & RBAC GUARD)
   // ---------------------------------------------------------------------------
   if (currentView === 'px-control') {
+    // Se não for admin ou super admin -> Tela 403 Acesso Negado
+    if (!isAdmin) {
+      return (
+        <div className="min-h-screen bg-black text-white flex flex-col antialiased selection:bg-[#FF1A2D] selection:text-white pb-14 md:pb-0">
+          <Navbar
+            currentTab={currentView}
+            onNavigate={handleNavigate}
+            unreadCount={unreadNotifsCount}
+          />
+          <main className="flex-1">
+            <AccessDeniedPage
+              user={profile}
+              onBackToHome={() => handleNavigate('home')}
+              onNavigateProfile={() => handleNavigate('profile')}
+              onLogout={async () => {
+                await logout();
+                handleNavigate('home');
+              }}
+            />
+          </main>
+          <Footer onNavigate={handleNavigate} />
+          <BottomNav currentTab={currentView} onNavigate={handleNavigate} />
+        </div>
+      );
+    }
+
+    // Administrador autenticado -> Renderiza PX CONTROL
     return (
       <AdminLayout
         currentSection={adminSection}
@@ -227,10 +347,20 @@ export default function App() {
 
       {/* Main View Router */}
       <main className="flex-1">
+        {/* TELA DE LOGIN / CADASTRO */}
+        {currentView === 'login' && (
+          <LoginPage
+            redirectTo={loginRedirectTarget}
+            onLoginSuccess={handleLoginSuccess}
+            onCancel={() => handleNavigate('home')}
+            customNotice={loginCustomNotice}
+          />
+        )}
+
         {currentView === 'home' && (
           <HomePage
             events={events}
-            user={user}
+            user={activeProfile}
             vehicles={vehicles}
             unreadNotifsCount={unreadNotifsCount}
             onSelectEvent={handleSelectEvent}
@@ -257,7 +387,12 @@ export default function App() {
         {currentView === 'checkout' && currentEvent && (
           <CheckoutPage
             event={currentEvent}
-            user={user}
+            user={{
+              name: activeProfile.name || '',
+              email: activeProfile.email || '',
+              phone: activeProfile.phone || '',
+              cpf: activeProfile.cpf || '',
+            }}
             onBack={() => handleNavigate('event-detail')}
             onSuccess={handleCheckoutSuccess}
           />
@@ -281,9 +416,13 @@ export default function App() {
 
         {currentView === 'profile' && (
           <ProfilePage
-            user={user}
-            onUpdateUser={(updated) => setUser({ ...user, ...updated })}
+            user={activeProfile}
+            onUpdateUser={() => {}}
             onNavigate={handleNavigate}
+            onLogout={async () => {
+              await logout();
+              handleNavigate('home');
+            }}
           />
         )}
 
@@ -299,7 +438,7 @@ export default function App() {
       {/* Footer */}
       <Footer onNavigate={handleNavigate} />
 
-      {/* Mobile Bottom Navigation Bar (Matching Mockup Screen) */}
+      {/* Mobile Bottom Navigation Bar */}
       <BottomNav
         currentTab={currentView}
         onNavigate={handleNavigate}

@@ -30,7 +30,8 @@ export const CheckoutPage: React.FC<CheckoutPageProps> = ({
   const [processing, setProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const selectedBatch = event.ticketBatches[selectedBatchIndex] || event.ticketBatches[0];
+  const batches = event?.ticketBatches || [];
+  const selectedBatch = batches[selectedBatchIndex] || batches[0] || { id: 'default', name: 'Ingresso Oficial', price: 50 };
 
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();

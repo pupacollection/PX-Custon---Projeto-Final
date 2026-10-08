@@ -113,7 +113,7 @@ export async function resolveStorageUserId(explicitUserId?: string): Promise<str
       // Ignora erro de sessão
     }
   }
-  return explicitUserId || 'usr-deivid-01';
+  return explicitUserId || '';
 }
 
 /**

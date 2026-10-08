@@ -189,7 +189,7 @@ export const AdminEventsPage: React.FC<AdminEventsPageProps> = ({ events, onAddE
 
       {/* Events Table / Cards */}
       <div className="space-y-4">
-        {events.map((event) => (
+        {(events || []).map((event) => (
           <div
             key={event.id}
             className="p-5 rounded-2xl bg-[#0c0c0c] border border-[#1c1c1c] flex flex-col md:flex-row md:items-center justify-between gap-4"

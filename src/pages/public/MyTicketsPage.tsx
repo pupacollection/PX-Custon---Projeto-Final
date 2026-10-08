@@ -34,9 +34,9 @@ export const MyTicketsPage: React.FC<MyTicketsPageProps> = ({ tickets, onBrowseE
       </div>
 
       {/* Tickets List */}
-      {tickets.length > 0 ? (
+      {(tickets || []).length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {tickets.map((ticket) => {
+          {(tickets || []).map((ticket) => {
             const isPaid = ticket.status === 'PAGO';
             return (
               <div

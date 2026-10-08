@@ -827,7 +827,8 @@ async function startServer() {
     res.status(200).send("OK");
   });
   const distPath = path.resolve(__dirname, "dist");
-  if (process.env.NODE_ENV === "production" || fs.existsSync(distPath)) {
+  const isProduction = process.env.NODE_ENV === "production" || process.env.npm_lifecycle_event === "start";
+  if (isProduction && fs.existsSync(distPath)) {
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.resolve(distPath, "index.html"));
