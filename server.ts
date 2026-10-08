@@ -72,8 +72,8 @@ async function startServer() {
       }
 
       const allowedMimes = isBranding
-        ? ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
-        : ['image/jpeg', 'image/png', 'image/webp'];
+        ? ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml']
+        : ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 
       if (!allowedMimes.includes(mimeType)) {
         return res.status(400).json({ error: `Tipo MIME não permitido: ${mimeType}` });

@@ -631,7 +631,7 @@ async function startServer() {
           error: `Extens\xE3o de arquivo n\xE3o permitida (${ext}). Permitidas: ${allowedExts.join(", ")}`
         });
       }
-      const allowedMimes = isBranding ? ["image/jpeg", "image/png", "image/webp", "image/svg+xml"] : ["image/jpeg", "image/png", "image/webp"];
+      const allowedMimes = isBranding ? ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/svg+xml"] : ["image/jpeg", "image/jpg", "image/png", "image/webp"];
       if (!allowedMimes.includes(mimeType)) {
         return res.status(400).json({ error: `Tipo MIME n\xE3o permitido: ${mimeType}` });
       }

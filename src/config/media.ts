@@ -17,9 +17,9 @@ export const MEDIA_CONFIG = {
     BRANDING: 'branding' as StorageBucket,
   },
 
-  // Tipos MIME permitidos
-  ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/webp'] as const,
-  ALLOWED_BRANDING_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml'] as const,
+  // Tipos MIME permitidos (inclui image/jpg para compatibilidade ampla)
+  ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'] as const,
+  ALLOWED_BRANDING_TYPES: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml'] as const,
 
   // Extensões permitidas
   ALLOWED_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.webp'] as const,

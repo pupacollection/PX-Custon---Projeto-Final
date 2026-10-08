@@ -18,6 +18,8 @@ import {
   buildOrganizedStoragePath,
   StorageBucket,
   getFileExtension,
+  DetailedUploadError,
+  resolveStorageUserId,
 } from '../../lib/supabaseStorage';
 import { ImagePreview } from './ImagePreview';
 import { api } from '../../services/api';
@@ -65,6 +67,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [uploadErrorDetails, setUploadErrorDetails] = useState<DetailedUploadError | null>(null);
   const [enlargedItem, setEnlargedItem] = useState<MediaItem | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -75,6 +78,7 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
   const processFiles = async (files: FileList | File[]) => {
     setErrorMessage(null);
+    setUploadErrorDetails(null);
 
     const fileArray = Array.from(files);
     if (fileArray.length === 0) return;
@@ -110,13 +114,18 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
 
     const newItems: MediaItem[] = [];
 
+    // Resolve user ID dinamicamente com prioridade para sessão Supabase Auth
+    const effectiveUserId = await resolveStorageUserId(userId);
+
     for (let i = 0; i < validFiles.length; i++) {
       const file = validFiles[i];
       setUploadProgress({ current: i + 1, total: validFiles.length });
 
+      let targetBucket: StorageBucket = 'events';
+      let fullPath = '';
+
       try {
         const ext = getFileExtension(file.name);
-        let targetBucket: StorageBucket = 'events';
         let subType: 'event_banner' | 'event_cover' | 'event_gallery' | 'vehicle' | 'profile' | 'branding' = 'event_gallery';
 
         if (uploadType === 'event_banner') {
@@ -140,17 +149,18 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         }
 
         // Build organized unique path according to specification
-        const { fullPath } = buildOrganizedStoragePath({
+        const pathData = buildOrganizedStoragePath({
           bucket: targetBucket,
           resourceType: subType,
           resourceId,
-          userId,
+          userId: effectiveUserId,
           vehicleId,
           category: resourceId || 'general',
           extension: ext,
         });
+        fullPath = pathData.fullPath;
 
-        // Upload to Supabase Storage (with graceful fallback to local preview)
+        // Upload to Supabase Storage (lança DetailedUploadError se falhar)
         const storageResult = await uploadFile(targetBucket, fullPath, file);
 
         // Save metadata reference to backend/database
@@ -171,14 +181,26 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
             ? 'branding'
             : 'profile',
           resourceId,
-          userId,
+          userId: effectiveUserId,
           isPrimary: !multiple || (value.length === 0 && i === 0),
           sortOrder: value.length + i,
         });
 
         newItems.push(res.media);
       } catch (err: any) {
-        setErrorMessage(`Erro ao processar imagem "${file.name}": ${err.message}`);
+        const detailed: DetailedUploadError = err && (err.statusCode !== undefined || err.bucket) ? err : {
+          message: err?.message || 'Erro inesperado no upload para Supabase Storage',
+          name: err?.name || 'StorageApiError',
+          statusCode: err?.statusCode || (err as any)?.status || 400,
+          bucket: targetBucket,
+          path: fullPath || `${targetBucket}/unresolved`,
+          fileName: file.name,
+          fileType: file.type || 'image/jpeg',
+          fileSize: file.size,
+        };
+        setUploadErrorDetails(detailed);
+        setErrorMessage(detailed.message);
+        break; // Interrompe para exibir o diagnóstico preciso do primeiro arquivo com erro
       }
     }
 
@@ -377,8 +399,95 @@ export const MediaUploader: React.FC<MediaUploaderProps> = ({
         </div>
       )}
 
-      {/* Error Message */}
-      {errorMessage && (
+      {/* Detailed Diagnostic Error Box for Supabase Storage */}
+      {uploadErrorDetails && (
+        <div className="p-4 rounded-2xl bg-[#14080a] border border-[#FF1A2D]/60 space-y-3 animate-fadeIn">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 text-white">
+              <AlertTriangle className="w-5 h-5 text-[#FF1A2D] shrink-0" />
+              <div>
+                <h4 className="text-xs sm:text-sm font-bold font-heading uppercase text-white">
+                  Diagnóstico de Erro no Supabase Storage (HTTP {uploadErrorDetails.statusCode})
+                </h4>
+                <p className="text-[11px] text-red-300 font-mono">
+                  {uploadErrorDetails.name}: {uploadErrorDetails.message}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setUploadErrorDetails(null);
+                setErrorMessage(null);
+              }}
+              className="text-gray-400 hover:text-white p-1 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Diagnostic Grid Details (Prompt Item 2) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 p-3 rounded-xl bg-[#0a0405] border border-red-950/60 text-[11px] font-mono">
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Bucket</span>
+              <span className="text-white font-bold">{uploadErrorDetails.bucket}</span>
+            </div>
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Status Code</span>
+              <span className="text-[#FF1A2D] font-bold">{uploadErrorDetails.statusCode}</span>
+            </div>
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Error Name</span>
+              <span className="text-gray-200">{uploadErrorDetails.name}</span>
+            </div>
+            <div className="col-span-2 sm:col-span-3">
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Caminho (Path)</span>
+              <span className="text-gray-300 break-all">{uploadErrorDetails.path}</span>
+            </div>
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Arquivo</span>
+              <span className="text-gray-200 truncate block">{uploadErrorDetails.fileName}</span>
+            </div>
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Tipo MIME</span>
+              <span className="text-gray-200">{uploadErrorDetails.fileType}</span>
+            </div>
+            <div>
+              <span className="text-gray-400 block text-[10px] uppercase font-sans">Tamanho</span>
+              <span className="text-gray-200">{(uploadErrorDetails.fileSize / 1024).toFixed(1)} KB</span>
+            </div>
+          </div>
+
+          {/* Diagnostic Recommendation / Cause */}
+          <div className="text-[11px] text-gray-300 bg-[#1c0d0f] p-2.5 rounded-xl border border-red-900/40 space-y-1">
+            <span className="font-bold text-red-400 block">Causa do Erro HTTP 400:</span>
+            {uploadErrorDetails.message.toLowerCase().includes('policy') ||
+            uploadErrorDetails.message.toLowerCase().includes('row-level security') ||
+            uploadErrorDetails.statusCode === 400 ? (
+              <p className="text-gray-300 leading-relaxed">
+                As políticas RLS de <code className="text-white">storage.objects</code> no Supabase exigem que o usuário esteja autenticado no Supabase Auth e com a role adequada. Verifique se o schema SQL corrigido em <code className="text-white">/supabase-schema.sql</code> foi executado no <strong>SQL Editor</strong> do Supabase.
+              </p>
+            ) : (
+              <p className="text-gray-300 leading-relaxed">
+                Verifique se o bucket <code className="text-white">{uploadErrorDetails.bucket}</code> existe e aceita o tipo MIME <code className="text-white">{uploadErrorDetails.fileType}</code> nas configurações de Storage.
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3 py-1.5 rounded-lg bg-[#FF1A2D] hover:bg-red-600 text-white font-bold text-xs cursor-pointer transition"
+            >
+              Tentar Novamente
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Simple Error Message (if no detailed diagnostic) */}
+      {errorMessage && !uploadErrorDetails && (
         <div className="p-3 rounded-xl bg-red-950/40 border border-[#FF1A2D]/50 text-[#FF3344] text-xs flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />

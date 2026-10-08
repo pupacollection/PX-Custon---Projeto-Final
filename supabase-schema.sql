@@ -321,7 +321,25 @@ CREATE POLICY "Users can manage own media records"
 -- 15. SUPABASE STORAGE — BUCKETS & STORAGE ROW LEVEL SECURITY (RLS)
 -- ==============================================================================
 
--- 15.1 CRIAÇÃO DOS BUCKETS DEDICADOS
+-- 15.1 FUNÇÃO AUXILIAR DE SEGURANÇA PARA CHECAGEM DE ADMIN (SECURITY DEFINER)
+-- Evita recursão infinita e bypass de RLS na tabela public.profiles durante validação no Storage
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS boolean
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid()
+      AND role IN ('SUPER_ADMIN', 'ADMIN')
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated, anon;
+
+-- 15.2 CRIAÇÃO DOS BUCKETS DEDICADOS
 -- events: Banners, capas e galerias de eventos (10 MB, público)
 -- vehicles: Fotos dos veículos dos usuários (10 MB, público)
 -- profiles: Avatares dos participantes (5 MB, público)
@@ -329,178 +347,251 @@ CREATE POLICY "Users can manage own media records"
 
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES
-  ('events', 'events', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp']::text[]),
-  ('vehicles', 'vehicles', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp']::text[]),
-  ('profiles', 'profiles', true, 5242880, ARRAY['image/jpeg', 'image/png', 'image/webp']::text[]),
-  ('branding', 'branding', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']::text[])
+  ('events', 'events', true, 10485760, ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp']::text[]),
+  ('vehicles', 'vehicles', true, 10485760, ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp']::text[]),
+  ('profiles', 'profiles', true, 5242880, ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp']::text[]),
+  ('branding', 'branding', true, 10485760, ARRAY['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml']::text[])
 ON CONFLICT (id) DO UPDATE SET
   public = EXCLUDED.public,
   file_size_limit = EXCLUDED.file_size_limit,
   allowed_mime_types = EXCLUDED.allowed_mime_types;
 
--- 15.2 POLÍTICAS DE SEGURANÇA (STORAGE.OBJECTS)
--- REGRAS:
--- 1. EVENTOS: Qualquer um visualiza; Somente SUPER_ADMIN/ADMIN podem enviar, substituir ou excluir.
--- 2. VEÍCULOS: Usuário envia e gerencia apenas as próprias fotos; Administradores podem gerenciar.
--- 3. PERFIS: Usuário altera apenas a própria foto; Administradores podem visualizar.
--- 4. BRANDING: Qualquer um visualiza; Somente SUPER_ADMIN/ADMIN podem modificar.
--- 5. SEM UPLOAD ANÔNIMO: Bloqueio estrito de inserções anônimas.
+-- 15.3 LIMPEZA PREVENTIVA DE POLÍTICAS ANTERIORES PARA IDEMPOTÊNCIA
+DROP POLICY IF EXISTS "Public can view event images" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can upload event images" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can update event images" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can delete event images" ON storage.objects;
 
--- Bucket 'events'
+DROP POLICY IF EXISTS "Public can view vehicle images" ON storage.objects;
+DROP POLICY IF EXISTS "Users can upload own vehicle photos" ON storage.objects;
+DROP POLICY IF EXISTS "Users can update own vehicle photos" ON storage.objects;
+DROP POLICY IF EXISTS "Users can delete own vehicle photos" ON storage.objects;
+
+DROP POLICY IF EXISTS "Public can view profile avatars" ON storage.objects;
+DROP POLICY IF EXISTS "Users can upload own avatar" ON storage.objects;
+DROP POLICY IF EXISTS "Users can update own avatar" ON storage.objects;
+DROP POLICY IF EXISTS "Users can delete own avatar" ON storage.objects;
+
+DROP POLICY IF EXISTS "Public can view branding assets" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can upload branding assets" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can update branding assets" ON storage.objects;
+DROP POLICY IF EXISTS "Admins can delete branding assets" ON storage.objects;
+
+-- 15.4 POLÍTICAS DE SEGURANÇA (STORAGE.OBJECTS)
+
+-- ------------------------------------------------------------------------------
+-- BUCKET: events
+-- Leitura pública; inserção, atualização e exclusão por SUPER_ADMIN/ADMIN
+-- ------------------------------------------------------------------------------
 CREATE POLICY "Public can view event images"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'events');
 
 CREATE POLICY "Admins can upload event images"
   ON storage.objects FOR INSERT
+  TO authenticated
   WITH CHECK (
     bucket_id = 'events'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Admins can update event images"
   ON storage.objects FOR UPDATE
+  TO authenticated
   USING (
     bucket_id = 'events'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+    )
+  )
+  WITH CHECK (
+    bucket_id = 'events'
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Admins can delete event images"
   ON storage.objects FOR DELETE
+  TO authenticated
   USING (
     bucket_id = 'events'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
--- Bucket 'vehicles'
+-- ------------------------------------------------------------------------------
+-- BUCKET: vehicles
+-- Caminho: {userId}/{vehicleId}/{uuid}.{ext}
+-- ------------------------------------------------------------------------------
 CREATE POLICY "Public can view vehicle images"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'vehicles');
 
 CREATE POLICY "Users can upload own vehicle photos"
   ON storage.objects FOR INSERT
+  TO authenticated
   WITH CHECK (
     bucket_id = 'vehicles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Users can update own vehicle photos"
   ON storage.objects FOR UPDATE
+  TO authenticated
   USING (
     bucket_id = 'vehicles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+    )
+  )
+  WITH CHECK (
+    bucket_id = 'vehicles'
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Users can delete own vehicle photos"
   ON storage.objects FOR DELETE
+  TO authenticated
   USING (
     bucket_id = 'vehicles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
--- Bucket 'profiles'
+-- ------------------------------------------------------------------------------
+-- BUCKET: profiles
+-- Caminho gerado: {userId}/{uuid}.{ext}
+-- ------------------------------------------------------------------------------
 CREATE POLICY "Public can view profile avatars"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'profiles');
 
 CREATE POLICY "Users can upload own avatar"
   ON storage.objects FOR INSERT
+  TO authenticated
   WITH CHECK (
     bucket_id = 'profiles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Users can update own avatar"
   ON storage.objects FOR UPDATE
+  TO authenticated
   USING (
     bucket_id = 'profiles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+    )
+  )
+  WITH CHECK (
+    bucket_id = 'profiles'
+    AND (
+      (storage.foldername(name))[1] = auth.uid()::text
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Users can delete own avatar"
   ON storage.objects FOR DELETE
+  TO authenticated
   USING (
     bucket_id = 'profiles'
-    AND auth.role() = 'authenticated'
     AND (
       (storage.foldername(name))[1] = auth.uid()::text
-      OR EXISTS (
-        SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
-      )
+      OR public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
--- Bucket 'branding'
+-- ------------------------------------------------------------------------------
+-- BUCKET: branding
+-- Caminho gerado: {category}/{uuid}.{ext}
+-- ------------------------------------------------------------------------------
 CREATE POLICY "Public can view branding assets"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'branding');
 
 CREATE POLICY "Admins can upload branding assets"
   ON storage.objects FOR INSERT
+  TO authenticated
   WITH CHECK (
     bucket_id = 'branding'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Admins can update branding assets"
   ON storage.objects FOR UPDATE
+  TO authenticated
   USING (
     bucket_id = 'branding'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+    )
+  )
+  WITH CHECK (
+    bucket_id = 'branding'
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 
 CREATE POLICY "Admins can delete branding assets"
   ON storage.objects FOR DELETE
+  TO authenticated
   USING (
     bucket_id = 'branding'
-    AND auth.role() = 'authenticated'
-    AND EXISTS (
-      SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role IN ('SUPER_ADMIN', 'ADMIN')
+    AND (
+      public.is_admin()
+      OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
+      OR (auth.jwt() -> 'app_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')
     )
   );
 

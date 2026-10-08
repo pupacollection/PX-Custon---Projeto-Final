@@ -12,6 +12,18 @@ export interface StorageUploadResult {
   message: string;
 }
 
+export interface DetailedUploadError {
+  message: string;
+  name: string;
+  statusCode: number | string;
+  bucket: StorageBucket;
+  path: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  rawError?: any;
+}
+
 export interface StorageBucketInfo {
   id: StorageBucket;
   name: string;
@@ -30,7 +42,7 @@ export const STORAGE_BUCKET_CONFIGS: Record<StorageBucket, StorageBucketInfo> = 
     public: true,
     fileSizeLimit: '10 MB',
     maxSizeBytes: 10 * 1024 * 1024,
-    allowedMimes: ['image/jpeg', 'image/png', 'image/webp'],
+    allowedMimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
   },
   vehicles: {
     id: 'vehicles',
@@ -39,7 +51,7 @@ export const STORAGE_BUCKET_CONFIGS: Record<StorageBucket, StorageBucketInfo> = 
     public: true,
     fileSizeLimit: '10 MB',
     maxSizeBytes: 10 * 1024 * 1024,
-    allowedMimes: ['image/jpeg', 'image/png', 'image/webp'],
+    allowedMimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
   },
   profiles: {
     id: 'profiles',
@@ -48,7 +60,7 @@ export const STORAGE_BUCKET_CONFIGS: Record<StorageBucket, StorageBucketInfo> = 
     public: true,
     fileSizeLimit: '5 MB',
     maxSizeBytes: 5 * 1024 * 1024,
-    allowedMimes: ['image/jpeg', 'image/png', 'image/webp'],
+    allowedMimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
   },
   branding: {
     id: 'branding',
@@ -57,7 +69,7 @@ export const STORAGE_BUCKET_CONFIGS: Record<StorageBucket, StorageBucketInfo> = 
     public: true,
     fileSizeLimit: '10 MB',
     maxSizeBytes: 10 * 1024 * 1024,
-    allowedMimes: ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml'],
+    allowedMimes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/svg+xml'],
   },
 };
 
@@ -65,6 +77,43 @@ export const SUGGESTED_BUCKETS: StorageBucketInfo[] = Object.values(STORAGE_BUCK
 
 export function getSupabaseStorageConfig() {
   return getSupabaseConfig();
+}
+
+/**
+ * Normaliza o tipo MIME para compatibilidade com o Supabase Storage
+ */
+export function normalizeMimeType(file: File | Blob, bucket: StorageBucket, path: string): string {
+  const rawType = (file.type || '').toLowerCase();
+  if (bucket === 'branding' && (path.endsWith('.svg') || rawType.includes('svg'))) {
+    return 'image/svg+xml';
+  }
+  if (rawType === 'image/jpg' || rawType === 'image/pjpeg' || path.endsWith('.jpg') || path.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
+  if (rawType === 'image/png' || path.endsWith('.png')) {
+    return 'image/png';
+  }
+  if (rawType === 'image/webp' || path.endsWith('.webp')) {
+    return 'image/webp';
+  }
+  return rawType || 'image/jpeg';
+}
+
+/**
+ * Obtém o UUID autenticado do Supabase se houver sessão ativa
+ */
+export async function resolveStorageUserId(explicitUserId?: string): Promise<string> {
+  if (supabase) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      if (data?.session?.user?.id) {
+        return data.session.user.id;
+      }
+    } catch {
+      // Ignora erro de sessão
+    }
+  }
+  return explicitUserId || 'usr-deivid-01';
 }
 
 /**
@@ -157,11 +206,12 @@ export function buildOrganizedStoragePath(params: {
  * Envia o arquivo ao Supabase Storage.
  *
  * - Quando o Supabase estiver configurado:
- *   Utiliza supabase.storage.from(bucket).upload(...)
- *   Gera a URL pública permanente.
+ *   Chama supabase.storage.from(bucket).upload(path, file, ...)
+ *   Se falhar, extrai diagnóstico completo (message, name, statusCode, bucket, path, file)
+ *   e lança DetailedUploadError sem mascarar com fallback local definitivo.
  *
- * - Quando falhar ou não estiver conectado:
- *   Fallback gracioso para Data URL seguro na sessão, com mensagem clara sem travar a interface.
+ * - Quando não estiver configurado (apenas desenvolvimento local sem Supabase):
+ *   Retorna preview Data URL explicitando modo demonstração.
  */
 export async function uploadFile(
   bucket: StorageBucket,
@@ -182,44 +232,51 @@ export async function uploadFile(
 
   // 1. Tentar upload real no Supabase Storage se configurado
   if (config.isConfigured && supabase) {
-    try {
-      const contentType = file.type || (bucket === 'branding' && path.endsWith('.svg') ? 'image/svg+xml' : 'image/jpeg');
+    const contentType = normalizeMimeType(file, bucket, cleanBucketPath);
 
-      const { data, error } = await supabase.storage
-        .from(bucket)
-        .upload(cleanBucketPath, file, {
-          cacheControl: '3600',
-          upsert: true,
-          contentType,
-        });
+    const { error } = await supabase.storage
+      .from(bucket)
+      .upload(cleanBucketPath, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType,
+      });
 
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      // Obter URL pública do Supabase Storage
-      const { data: publicData } = supabase.storage
-        .from(bucket)
-        .getPublicUrl(cleanBucketPath);
-
-      const publicUrl = publicData.publicUrl;
-
-      return {
-        url: publicUrl,
-        path: fullStoragePath,
+    if (error) {
+      const statusCode = (error as any).statusCode || (error as any).status || 400;
+      const detailedError: DetailedUploadError = {
+        message: error.message || 'Erro no upload para o Supabase Storage',
+        name: error.name || 'StorageApiError',
+        statusCode,
         bucket,
-        isRealStorage: true,
-        message: 'Arquivo armazenado com sucesso no Supabase Storage.',
+        path: cleanBucketPath,
+        fileName: file instanceof File ? file.name : 'blob',
+        fileType: contentType,
+        fileSize: file.size,
+        rawError: error,
       };
-    } catch (err: any) {
-      console.warn(
-        `[Supabase Storage] Falha ao enviar para bucket "${bucket}" (${err.message}). Recorrendo ao preview local seguro.`,
-        err
-      );
+
+      console.error('[Supabase Storage Diagnostic Error]', detailedError);
+      throw detailedError;
     }
+
+    // Obter URL pública do Supabase Storage
+    const { data: publicData } = supabase.storage
+      .from(bucket)
+      .getPublicUrl(cleanBucketPath);
+
+    const publicUrl = publicData.publicUrl;
+
+    return {
+      url: publicUrl,
+      path: fullStoragePath,
+      bucket,
+      isRealStorage: true,
+      message: 'Arquivo armazenado com sucesso no Supabase Storage.',
+    };
   }
 
-  // 2. Fallback gracioso para modo local / preview transparente (NUNCA finge que salvou no Supabase)
+  // 2. Fallback de desenvolvimento local SOMENTE quando Supabase NÃO estiver configurado
   let localDataUrl: string;
   if (file instanceof File) {
     localDataUrl = await fileToDataUrl(file);
@@ -237,7 +294,7 @@ export async function uploadFile(
     path: fullStoragePath,
     bucket,
     isRealStorage: false,
-    message: 'Modo de demonstração: Supabase Storage não conectado. Imagens salvas localmente nesta sessão.',
+    message: 'Modo demonstração — arquivo não persistido. Supabase Storage não configurado.',
   };
 }
 
