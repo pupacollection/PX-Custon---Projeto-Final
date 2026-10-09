@@ -59,12 +59,12 @@ DROP POLICY IF EXISTS "Admins can delete branding assets" ON storage.objects;
 -- EVENTS
 CREATE POLICY "Public can view event images" ON storage.objects FOR SELECT USING (bucket_id = 'events');
 CREATE POLICY "Admins can upload event images" ON storage.objects FOR INSERT TO authenticated
-  WITH CHECK (bucket_id = 'events' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));
+  WITH CHECK (bucket_id = 'events' AND public.is_admin());
 CREATE POLICY "Admins can update event images" ON storage.objects FOR UPDATE TO authenticated
-  USING (bucket_id = 'events' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')))
-  WITH CHECK (bucket_id = 'events' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));
+  USING (bucket_id = 'events' AND public.is_admin())
+  WITH CHECK (bucket_id = 'events' AND public.is_admin());
 CREATE POLICY "Admins can delete event images" ON storage.objects FOR DELETE TO authenticated
-  USING (bucket_id = 'events' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));
+  USING (bucket_id = 'events' AND public.is_admin());
 
 -- VEHICLES
 CREATE POLICY "Public can view vehicle images" ON storage.objects FOR SELECT USING (bucket_id = 'vehicles');
@@ -89,12 +89,12 @@ CREATE POLICY "Users can delete own avatar" ON storage.objects FOR DELETE TO aut
 -- BRANDING
 CREATE POLICY "Public can view branding assets" ON storage.objects FOR SELECT USING (bucket_id = 'branding');
 CREATE POLICY "Admins can upload branding assets" ON storage.objects FOR INSERT TO authenticated
-  WITH CHECK (bucket_id = 'branding' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));
+  WITH CHECK (bucket_id = 'branding' AND public.is_admin());
 CREATE POLICY "Admins can update branding assets" ON storage.objects FOR UPDATE TO authenticated
-  USING (bucket_id = 'branding' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')))
-  WITH CHECK (bucket_id = 'branding' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));
+  USING (bucket_id = 'branding' AND public.is_admin())
+  WITH CHECK (bucket_id = 'branding' AND public.is_admin());
 CREATE POLICY "Admins can delete branding assets" ON storage.objects FOR DELETE TO authenticated
-  USING (bucket_id = 'branding' AND (public.is_admin() OR (auth.jwt() -> 'user_metadata' ->> 'role') IN ('SUPER_ADMIN', 'ADMIN')));`;
+  USING (bucket_id = 'branding' AND public.is_admin());`;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(supabaseSqlSnippet);

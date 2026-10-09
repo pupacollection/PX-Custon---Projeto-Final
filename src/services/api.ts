@@ -1,5 +1,4 @@
 import { EventItem, Ticket, Vehicle, CheckInLog, DashboardStats, MercadoPagoConfig, NotificationItem } from '../types';
-import { INITIAL_TICKETS, INITIAL_DASHBOARD_STATS, INITIAL_MERCADO_PAGO_CONFIG, INITIAL_NOTIFICATIONS } from './mockData';
 import { supabase } from '../lib/supabase';
 import {
   dbVehicleToVehicle,
@@ -19,11 +18,31 @@ export const api = {
       throw new Error('Supabase client não está configurado.');
     }
 
-    const { data, error } = await supabase
+    let data: any[] | null = null;
+    let error: any = null;
+
+    const resBatches = await supabase
       .from('events')
       .select('*, ticket_batches(*), event_images(*)')
-      .neq('status', 'CANCELADO')
       .order('created_at', { ascending: false });
+
+    if (resBatches.error) {
+      if (
+        resBatches.error.code === 'PGRST200' &&
+        (resBatches.error.message?.includes('ticket_batches') || resBatches.error.hint?.includes('ticket_types'))
+      ) {
+        const resTypes = await supabase
+          .from('events')
+          .select('*, ticket_types(*), event_images(*)')
+          .order('created_at', { ascending: false });
+        data = resTypes.data;
+        error = resTypes.error;
+      } else {
+        error = resBatches.error;
+      }
+    } else {
+      data = resBatches.data;
+    }
 
     if (error) {
       console.error('[PX CUSTOM] Erro ao carregar eventos do Supabase:', error);
@@ -46,11 +65,33 @@ export const api = {
       return null;
     }
 
-    const { data, error } = await supabase
+    let data: any = null;
+    let error: any = null;
+
+    const resBatches = await supabase
       .from('events')
       .select('*, ticket_batches(*), event_images(*)')
       .eq('slug', slug)
       .maybeSingle();
+
+    if (resBatches.error) {
+      if (
+        resBatches.error.code === 'PGRST200' &&
+        (resBatches.error.message?.includes('ticket_batches') || resBatches.error.hint?.includes('ticket_types'))
+      ) {
+        const resTypes = await supabase
+          .from('events')
+          .select('*, ticket_types(*), event_images(*)')
+          .eq('slug', slug)
+          .maybeSingle();
+        data = resTypes.data;
+        error = resTypes.error;
+      } else {
+        error = resBatches.error;
+      }
+    } else {
+      data = resBatches.data;
+    }
 
     if (error) {
       console.error(`[PX CUSTOM] Erro ao carregar evento por slug "${slug}":`, error);
@@ -242,29 +283,81 @@ export const api = {
     }
 
     // 5. Retornar evento completo atualizado com relacionamentos
-    const { data: fullData, error: fetchError } = await supabase
+    let fullData: any = null;
+    const fetchBatches = await supabase
       .from('events')
       .select('*, ticket_batches(*), event_images(*)')
       .eq('id', id)
       .single();
 
-    if (fetchError || !fullData) {
+    if (fetchBatches.error) {
+      if (
+        fetchBatches.error.code === 'PGRST200' &&
+        (fetchBatches.error.message?.includes('ticket_batches') || fetchBatches.error.hint?.includes('ticket_types'))
+      ) {
+        const fetchTypes = await supabase
+          .from('events')
+          .select('*, ticket_types(*), event_images(*)')
+          .eq('id', id)
+          .single();
+        fullData = fetchTypes.data;
+      }
+    } else {
+      fullData = fetchBatches.data;
+    }
+
+    if (!fullData) {
       return dbEventToEventItem(updatedRow as DbEventRow);
     }
 
     return dbEventToEventItem(fullData as unknown as DbEventRow);
   },
 
-  // Tickets
+  // Tickets (Persistência real em Supabase public.tickets)
   async getTickets(): Promise<Ticket[]> {
-    try {
-      const res = await fetch('/api/tickets');
-      if (res.ok) {
-        const json = await res.json();
-        return Array.isArray(json) ? json : INITIAL_TICKETS;
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('tickets')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('[PX CUSTOM] Erro ao carregar tickets do Supabase:', error.message);
+        throw new Error(`Erro ao consultar ingressos: ${error.message}`);
       }
-    } catch {}
-    return INITIAL_TICKETS;
+
+      if (data) {
+        return data.map((row: any) => {
+          const ticketCode = row.ticket_code || row.code || `PX-${row.id?.substring(0, 8) || 'TICKET'}`;
+          return {
+            id: row.id,
+            code: ticketCode,
+            eventId: row.event_id,
+            eventName: 'Encontro PX Custom',
+            batchName: row.batch_name || 'Geral',
+            price: Number(row.price || 0),
+            buyerName: row.buyer_name || 'Participante',
+            buyerEmail: row.buyer_email || '',
+            buyerCpf: row.buyer_cpf || '',
+            buyerPhone: row.buyer_phone || '',
+            status: row.status,
+            paymentMethod: row.payment_method || 'PIX',
+            createdAt: row.created_at,
+            qrPayload: row.qr_code || row.qr_payload || `${ticketCode}|${row.event_id}|${row.status}`,
+            eventDate: '',
+            eventTime: '',
+            eventLocation: '',
+          };
+        });
+      }
+    }
+
+    const res = await fetch('/api/tickets');
+    if (!res.ok) {
+      throw new Error(`Falha ao buscar ingressos no servidor (${res.status})`);
+    }
+    const json = await res.json();
+    return Array.isArray(json) ? json : [];
   },
 
   async purchaseTicket(data: {
@@ -277,42 +370,25 @@ export const api = {
     buyerPhone: string;
     paymentMethod: 'PIX' | 'CARTAO' | 'BOLETO';
   }): Promise<Ticket> {
-    try {
-      const res = await fetch('/api/tickets/purchase', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        const json = await res.json();
-        return json.ticket;
-      }
-    } catch {}
+    const res = await fetch('/api/tickets/purchase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
 
-    // Fallback simulation
-    const code = `PX-2025-ENC-${Math.floor(10000 + Math.random() * 90000)}`;
-    return {
-      id: `tkt-${Date.now()}`,
-      code,
-      eventId: data.eventId,
-      eventName: 'Encontro PX Custom',
-      eventDate: '15 de Novembro de 2025',
-      eventTime: 'Das 08:00 às 22:00',
-      eventLocation: 'Parque de Exposições - Manhuaçu/MG',
-      batchName: data.batchName,
-      price: data.price,
-      buyerName: data.buyerName,
-      buyerEmail: data.buyerEmail,
-      buyerCpf: data.buyerCpf,
-      buyerPhone: data.buyerPhone,
-      status: 'PAGO',
-      paymentMethod: data.paymentMethod,
-      createdAt: new Date().toISOString(),
-      qrPayload: `${code}|${data.eventId}|PAGO`,
-    };
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || `Erro ao processar compra de ingresso (${res.status})`);
+    }
+
+    const json = await res.json();
+    if (!json.ticket) {
+      throw new Error('Servidor não retornou o ingresso processado.');
+    }
+    return json.ticket;
   },
 
-  // Check-In Validation
+  // Check-In Validation (Validação transacional real no backend/Supabase)
   async validateCheckIn(code: string, operatorName?: string): Promise<{
     authorized: boolean;
     reason: string;
@@ -321,44 +397,171 @@ export const api = {
     log?: CheckInLog | null;
   }> {
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (supabase) {
+        const { data: sessData } = await supabase.auth.getSession();
+        if (sessData?.session?.access_token) {
+          headers['Authorization'] = `Bearer ${sessData.session.access_token}`;
+        }
+      }
+
       const res = await fetch('/api/checkin/validate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, operatorName }),
+        headers,
+        body: JSON.stringify({ code: code.trim(), operatorName }),
       });
-      if (res.ok) return await res.json();
-    } catch {}
-
-    const clean = code.trim().toUpperCase();
-    if (clean.includes('74892') || clean.includes('90112') || clean.includes('VALID')) {
+      if (res.ok) {
+        return await res.json();
+      }
+      const errJson = await res.json().catch(() => ({}));
       return {
-        authorized: true,
-        reason: 'CHECK-IN AUTORIZADO',
-        details: 'Acesso liberado com sucesso. Bem-vindo à experiência PX CUSTOM!',
+        authorized: false,
+        reason: errJson.reason || 'ERRO DE VALIDAÇÃO',
+        details: errJson.details || `Erro do servidor (${res.status}) ao processar o check-in.`,
+      };
+    } catch {
+      return {
+        authorized: false,
+        reason: 'FALHA DE CONEXÃO',
+        details: 'Não foi possível conectar ao servidor para validar o ingresso. Verifique a conexão de rede.',
       };
     }
-    return {
-      authorized: false,
-      reason: 'INGRESSO INVÁLIDO',
-      details: 'Código de ingresso não localizado no sistema PX CUSTOM.',
-    };
   },
 
   async getCheckins(): Promise<CheckInLog[]> {
-    try {
-      const res = await fetch('/api/checkins');
-      if (res.ok) return await res.json();
-    } catch {}
-    return INITIAL_DASHBOARD_STATS.recentCheckins;
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('checkins')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('[PX CUSTOM] Erro ao carregar check-ins do Supabase:', error.message);
+        throw new Error(`Erro ao consultar check-ins: ${error.message}`);
+      }
+
+      if (data) {
+        return data.map((c: any) => ({
+          id: c.id,
+          ticketCode: c.ticket_code,
+          attendeeName: c.attendee_name,
+          batchName: c.batch_name,
+          eventName: 'PX CUSTOM',
+          timestamp: new Date(c.created_at).toLocaleString('pt-BR'),
+          operatorName: c.operator_name,
+          status: c.status,
+        }));
+      }
+    }
+
+    const res = await fetch('/api/checkins');
+    if (!res.ok) {
+      throw new Error(`Falha ao buscar check-ins (${res.status})`);
+    }
+    const json = await res.json();
+    return Array.isArray(json) ? json : [];
   },
 
-  // Dashboard Stats
+  // Dashboard Stats (Métricas calculadas a partir de dados reais do Supabase)
   async getDashboardStats(): Promise<DashboardStats> {
-    try {
-      const res = await fetch('/api/stats');
-      if (res.ok) return await res.json();
-    } catch {}
-    return INITIAL_DASHBOARD_STATS;
+    if (supabase) {
+      try {
+        const [
+          eventsRes,
+          ticketsRes,
+          ordersRes,
+          batchesRes,
+          checkinsRes
+        ] = await Promise.all([
+          supabase.from('events').select('id, title, status', { count: 'exact' }),
+          supabase.from('tickets').select('id, price, status, created_at'),
+          supabase.from('orders').select('id, total_amount, status'),
+          supabase.from('ticket_batches').select('id, quantity, sold_quantity'),
+          supabase.from('checkins').select('*').order('created_at', { ascending: false }).limit(10)
+        ]);
+
+        if (eventsRes.error && eventsRes.error.code !== 'PGRST116') {
+          throw new Error(`Erro ao consultar eventos: ${eventsRes.error.message}`);
+        }
+        if (ticketsRes.error && ticketsRes.error.code !== 'PGRST116') {
+          throw new Error(`Erro ao consultar ingressos: ${ticketsRes.error.message}`);
+        }
+        if (ordersRes.error && ordersRes.error.code !== 'PGRST116') {
+          throw new Error(`Erro ao consultar pedidos: ${ordersRes.error.message}`);
+        }
+
+        let totalCapacity = 0;
+        let totalSoldBatches = 0;
+        if (batchesRes.data && Array.isArray(batchesRes.data) && !batchesRes.error) {
+          for (const b of batchesRes.data) {
+            totalCapacity += Number((b as any).quantity || (b as any).total_quantity || 0);
+            totalSoldBatches += Number(b.sold_quantity || 0);
+          }
+        } else {
+          const typesRes = await supabase.from('ticket_types').select('id, quantity, sold_quantity');
+          if (typesRes.error && typesRes.error.code !== 'PGRST116' && typesRes.error.code !== 'PGRST200') {
+            console.warn('[PX CUSTOM] Aviso ao consultar lotes/tipos:', typesRes.error.message);
+          } else if (typesRes.data && Array.isArray(typesRes.data)) {
+            for (const t of typesRes.data) {
+              totalCapacity += Number((t as any).quantity || (t as any).total_quantity || 0);
+              totalSoldBatches += Number(t.sold_quantity || 0);
+            }
+          }
+        }
+
+        const ticketsList = ticketsRes.data || [];
+        const paidTickets = ticketsList.filter((t) => t.status === 'PAID' || t.status === 'PAGO' || t.status === 'USED' || t.status === 'UTILIZADO');
+        const usedTickets = ticketsList.filter((t) => t.status === 'USED' || t.status === 'UTILIZADO');
+        const ticketsSold = paidTickets.length > 0 ? paidTickets.length : totalSoldBatches;
+        const checkinsCount = usedTickets.length > 0 ? usedTickets.length : (checkinsRes.data?.length || 0);
+
+        let revenue = 0;
+        const paidOrders = (ordersRes.data || []).filter((o: any) => o.status === 'PAID' || o.status === 'PAGO');
+        if (paidOrders.length > 0) {
+          revenue = paidOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0);
+        } else if (paidTickets.length > 0) {
+          revenue = paidTickets.reduce((acc, t) => acc + Number(t.price || 0), 0);
+        }
+
+        const ticketsAvailable = Math.max(0, totalCapacity - ticketsSold);
+        const activeEventsCount = eventsRes.count ?? (eventsRes.data?.length || 0);
+
+        const categoryMap: { [key: string]: number } = {};
+        for (const t of paidTickets) {
+          const cat = (t as any).batch_name || 'Geral';
+          categoryMap[cat] = (categoryMap[cat] || 0) + 1;
+        }
+        const salesByBatch = Object.entries(categoryMap).map(([name, count]) => ({
+          name,
+          count,
+          percentage: ticketsSold > 0 ? Math.round((count / ticketsSold) * 100) : 0,
+        }));
+
+        return {
+          ticketsSold,
+          ticketsSoldGrowth: 0,
+          ticketsAvailable,
+          checkinsCount,
+          checkinsGrowth: 0,
+          totalRevenue: revenue,
+          revenueGrowth: 0,
+          salesByDay: [],
+          salesByBatch,
+          revenueByDay: [],
+          paymentMethods: [],
+          recentCheckins: (checkinsRes.data || []) as CheckInLog[],
+        };
+      } catch (err: any) {
+        console.error('[PX CUSTOM] Erro ao calcular métricas no Supabase:', err);
+        throw err;
+      }
+    }
+
+    const res = await fetch('/api/stats');
+    if (!res.ok) {
+      throw new Error(`Falha ao buscar estatísticas do servidor (${res.status})`);
+    }
+    return await res.json();
   },
 
   // Vehicles (Persistência oficial em Supabase public.vehicles)
@@ -513,14 +716,34 @@ export const api = {
 
   // Notifications
   async getNotifications(): Promise<NotificationItem[]> {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        return data.map((n: any) => ({
+          id: n.id,
+          userId: n.user_id,
+          title: n.title,
+          message: n.message,
+          type: n.type || 'INFO',
+          read: Boolean(n.read),
+          createdAt: n.created_at,
+          actionUrl: n.action_url,
+        }));
+      }
+    }
+
     try {
       const res = await fetch('/api/notifications');
       if (res.ok) {
         const json = await res.json();
-        return Array.isArray(json) ? json : INITIAL_NOTIFICATIONS;
+        return Array.isArray(json) ? json : [];
       }
     } catch {}
-    return INITIAL_NOTIFICATIONS;
+    return [];
   },
 
   // Mercado Pago
@@ -529,7 +752,16 @@ export const api = {
       const res = await fetch('/api/mercadopago/config');
       if (res.ok) return await res.json();
     } catch {}
-    return INITIAL_MERCADO_PAGO_CONFIG;
+    return {
+      environment: 'sandbox',
+      accessToken: '',
+      publicKey: '',
+      webhookSecret: '',
+      pixEnabled: true,
+      creditCardEnabled: true,
+      boletoEnabled: false,
+      connected: false,
+    };
   },
 
   async saveMercadoPagoConfig(config: Partial<MercadoPagoConfig>): Promise<{ success: boolean; message: string }> {

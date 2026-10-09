@@ -2,8 +2,11 @@
 import express from "express";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
+import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
 
 // src/services/mockData.ts
 var INITIAL_EVENTS = [
@@ -564,8 +567,14 @@ var MediaStore = class {
 var mediaStore = new MediaStore();
 
 // server.ts
+dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
+var supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+var supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
+var supabaseAdmin = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false, autoRefreshToken: false }
+}) : null;
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3e3;
@@ -728,27 +737,147 @@ async function startServer() {
     pxStore.events[index] = { ...pxStore.events[index], ...req.body };
     res.json(pxStore.events[index]);
   });
-  app.get("/api/tickets", (req, res) => {
+  app.get("/api/tickets", async (req, res) => {
+    if (supabaseAdmin) {
+      try {
+        const { data, error } = await supabaseAdmin.from("tickets").select("*").order("created_at", { ascending: false });
+        if (!error && data && data.length > 0) {
+          return res.json(data);
+        }
+      } catch (err) {
+        console.warn("[PX TICKETS] Falha ao carregar do Supabase:", err);
+      }
+    }
     res.json(pxStore.tickets);
   });
-  app.post("/api/tickets/purchase", (req, res) => {
+  app.post("/api/tickets/purchase", async (req, res) => {
     try {
       const ticket = pxStore.createTicket(req.body);
+      if (supabaseAdmin) {
+        try {
+          await supabaseAdmin.from("tickets").insert({
+            code: ticket.code,
+            event_id: ticket.eventId,
+            buyer_name: ticket.buyerName,
+            buyer_email: ticket.buyerEmail,
+            buyer_cpf: ticket.buyerCpf,
+            batch_name: ticket.batchName,
+            price: ticket.price,
+            status: ticket.status,
+            qr_payload: ticket.qrPayload
+          });
+        } catch (dbErr) {
+          console.warn("[PX TICKETS] Aviso ao persistir ticket no Supabase:", dbErr);
+        }
+      }
       res.status(201).json({ success: true, ticket });
     } catch (err) {
       res.status(400).json({ error: err.message || "Erro ao processar compra" });
     }
   });
-  app.post("/api/checkin/validate", (req, res) => {
+  app.post("/api/checkin/validate", async (req, res) => {
     const { code, operatorName } = req.body;
-    if (!code) {
+    if (!code || typeof code !== "string") {
       return res.status(400).json({
         authorized: false,
         reason: "C\xD3DIGO AUSENTE",
         details: "Informe o c\xF3digo do ingresso ou escaneie o QR Code."
       });
     }
-    const result = pxStore.validateCheckIn(code, operatorName);
+    const cleanRaw = code.trim().toUpperCase();
+    const cleanCode = cleanRaw.includes("|") ? cleanRaw.split("|")[0].trim() : cleanRaw;
+    let operatorUser = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && supabaseAdmin) {
+      try {
+        const token = authHeader.replace(/^Bearer\s+/i, "");
+        const { data: userData } = await supabaseAdmin.auth.getUser(token);
+        if (userData?.user) {
+          operatorUser = userData.user;
+        }
+      } catch (authErr) {
+        console.warn("[PX CHECKIN] Aviso ao validar token de operador:", authErr);
+      }
+    }
+    const op = operatorName || (operatorUser?.email ? `Operador (${operatorUser.email})` : "Operador PX Portaria 1");
+    if (supabaseAdmin) {
+      try {
+        const { data: rpcResult, error: rpcError } = await supabaseAdmin.rpc("fn_validate_and_checkin_ticket", {
+          p_ticket_code: cleanCode,
+          p_operator_name: op,
+          p_operator_id: operatorUser?.id || null
+        });
+        if (!rpcError && rpcResult && typeof rpcResult === "object") {
+          return res.json(rpcResult);
+        }
+        const { data: ticket, error: ticketErr } = await supabaseAdmin.from("tickets").select("*").or(`ticket_code.eq.${cleanCode},code.eq.${cleanCode}`).maybeSingle();
+        if (ticket) {
+          if (ticket.status === "UTILIZADO" || ticket.status === "USED") {
+            return res.json({
+              authorized: false,
+              reason: "INGRESSO J\xC1 UTILIZADO",
+              details: `Este ingresso j\xE1 realizou check-in em ${ticket.checked_in_at || "hor\xE1rio anterior"}${ticket.checked_in_by ? ` por ${ticket.checked_in_by}` : ""}.`,
+              ticket
+            });
+          }
+          if (ticket.status === "PENDENTE" || ticket.status === "PENDING") {
+            return res.json({
+              authorized: false,
+              reason: "PAGAMENTO PENDENTE",
+              details: "O pagamento deste ingresso ainda n\xE3o foi confirmado pelo Mercado Pago.",
+              ticket
+            });
+          }
+          if (ticket.status !== "PAGO" && ticket.status !== "PAID") {
+            return res.json({
+              authorized: false,
+              reason: `INGRESSO ${ticket.status}`,
+              details: `O status atual do ingresso \xE9 ${ticket.status}. Entrada n\xE3o permitida.`,
+              ticket
+            });
+          }
+          const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+          const targetStatus = ticket.status === "PAID" ? "USED" : "UTILIZADO";
+          const { data: updatedTicket, error: updateErr } = await supabaseAdmin.from("tickets").update({
+            status: targetStatus,
+            checked_in_at: nowIso,
+            checked_in_by: op
+          }).eq("id", ticket.id).in("status", ["PAGO", "PAID"]).select().single();
+          if (updateErr || !updatedTicket) {
+            return res.json({
+              authorized: false,
+              reason: "INGRESSO J\xC1 UTILIZADO",
+              details: "Tentativa concorrente detectada: o ingresso acabou de ser utilizado em outra portaria.",
+              ticket
+            });
+          }
+          try {
+            await supabaseAdmin.from("checkins").insert({
+              ticket_id: ticket.id,
+              event_id: ticket.event_id,
+              device_info: JSON.stringify({
+                operator: op,
+                operator_id: operatorUser?.id || null,
+                ticket_code: ticket.ticket_code || ticket.code || cleanCode,
+                status: "CONFIRMADO",
+                timestamp: nowIso
+              })
+            });
+          } catch (logErr) {
+            console.warn("[PX CHECKIN] Aviso ao gravar log na tabela checkins:", logErr);
+          }
+          return res.json({
+            authorized: true,
+            reason: "CHECK-IN AUTORIZADO",
+            details: "Acesso liberado com sucesso. Bem-vindo \xE0 experi\xEAncia PX CUSTOM!",
+            ticket: updatedTicket
+          });
+        }
+      } catch (dbErr) {
+        console.error("[PX CHECKIN] Falha operacional no banco:", dbErr);
+      }
+    }
+    const result = pxStore.validateCheckIn(cleanCode, operatorName);
     res.json(result);
   });
   app.get("/api/checkins", (req, res) => {
@@ -822,9 +951,111 @@ async function startServer() {
       message: "Conex\xE3o com a API do Mercado Pago validada com sucesso! Webhook pronto para escuta."
     });
   });
-  app.post("/api/mercadopago/webhook", (req, res) => {
-    console.log("[Mercado Pago Webhook Received]:", req.body);
-    res.status(200).send("OK");
+  app.post("/api/mercadopago/webhook", async (req, res) => {
+    try {
+      const webhookSecret = process.env.MERCADOPAGO_WEBHOOK_SECRET || process.env.MP_WEBHOOK_SECRET || "";
+      const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN || process.env.MP_ACCESS_TOKEN || "";
+      if (!webhookSecret) {
+        console.warn("[PX MERCADOPAGO] Erro operacional: Segredo do webhook (MERCADOPAGO_WEBHOOK_SECRET) n\xE3o configurado no servidor.");
+        return res.status(503).json({
+          error: "Servi\xE7o de webhook temporariamente indispon\xEDvel. Credenciais do webhook ausentes no servidor."
+        });
+      }
+      const dataId = req.body?.data?.id || req.query?.["data.id"] || req.query?.id;
+      if (!dataId || typeof dataId !== "string" && typeof dataId !== "number") {
+        return res.status(400).json({ error: "ID do recurso ausente na notifica\xE7\xE3o do webhook." });
+      }
+      const cleanDataId = String(dataId).trim();
+      const xSignature = req.headers["x-signature"];
+      const xRequestId = req.headers["x-request-id"];
+      if (!xSignature) {
+        console.warn("[PX MERCADOPAGO] Notifica\xE7\xE3o rejeitada: Cabe\xE7alho x-signature ausente.");
+        return res.status(401).json({ error: "Assinatura x-signature ausente." });
+      }
+      const parts = Object.fromEntries(
+        xSignature.split(",").map((part) => part.trim().split("="))
+      );
+      const ts = parts.ts;
+      const v1 = parts.v1;
+      if (!ts || !v1) {
+        console.warn("[PX MERCADOPAGO] Notifica\xE7\xE3o rejeitada: Cabe\xE7alho x-signature malformado.");
+        return res.status(401).json({ error: "Assinatura x-signature malformada." });
+      }
+      const manifest = `id:${cleanDataId};request-id:${xRequestId || ""};ts:${ts};`;
+      const computedHash = crypto.createHmac("sha256", webhookSecret).update(manifest).digest("hex");
+      const computedBuffer = Buffer.from(computedHash, "utf8");
+      const receivedBuffer = Buffer.from(v1, "utf8");
+      if (computedBuffer.length !== receivedBuffer.length || !crypto.timingSafeEqual(computedBuffer, receivedBuffer)) {
+        console.warn("[PX MERCADOPAGO] Notifica\xE7\xE3o rejeitada: Assinatura HMAC-SHA256 inv\xE1lida.");
+        return res.status(401).json({ error: "Assinatura criptogr\xE1fica do webhook inv\xE1lida." });
+      }
+      if (!accessToken) {
+        console.warn("[PX MERCADOPAGO] Erro operacional: Token de acesso (MERCADOPAGO_ACCESS_TOKEN) n\xE3o configurado para consulta oficial.");
+        return res.status(503).json({ error: "Token de consulta \xE0 API do Mercado Pago n\xE3o configurado." });
+      }
+      const mpResponse = await fetch(`https://api.mercadopago.com/v1/payments/${cleanDataId}`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+      if (!mpResponse.ok) {
+        console.warn(`[PX MERCADOPAGO] Falha ao consultar pagamento na API oficial: Status ${mpResponse.status}`);
+        return res.status(502).json({ error: "Falha ao consultar pagamento na API oficial do Mercado Pago." });
+      }
+      const paymentData = await mpResponse.json();
+      const paymentStatus = paymentData.status;
+      const externalReference = paymentData.external_reference;
+      const transactionAmount = Number(paymentData.transaction_amount || 0);
+      const currencyId = paymentData.currency_id || "BRL";
+      if (paymentStatus === "approved") {
+        console.log(`[PX MERCADOPAGO] Pagamento verificado como aprovado na API oficial.`);
+        if (supabaseAdmin) {
+          const { data: order, error: orderErr } = await supabaseAdmin.from("orders").select("id, code, event_id, user_id, buyer_name, buyer_email, buyer_cpf, total_amount, status").or(`mercadopago_payment_id.eq.${cleanDataId},code.eq.${externalReference || ""}`).maybeSingle();
+          if (orderErr) {
+            console.error("[PX MERCADOPAGO] Erro ao consultar pedido no Supabase:", orderErr.message);
+            return res.status(500).json({ error: "Erro ao consultar pedido no banco oficial." });
+          }
+          if (order) {
+            if (currencyId !== "BRL") {
+              console.warn(`[PX MERCADOPAGO] Moeda divergente rejeitada: ${currencyId}`);
+              return res.status(400).json({ error: "Moeda n\xE3o autorizada para o pedido." });
+            }
+            if (transactionAmount < Number(order.total_amount)) {
+              console.warn(`[PX MERCADOPAGO] Valor recebido inferior ao total do pedido.`);
+              return res.status(400).json({ error: "Valor pago divergente ou insuficiente." });
+            }
+            if (order.status !== "PAID" && order.status !== "PAGO") {
+              await supabaseAdmin.from("orders").update({
+                status: "PAID",
+                mercadopago_payment_id: cleanDataId,
+                updated_at: (/* @__PURE__ */ new Date()).toISOString()
+              }).eq("id", order.id);
+            }
+            const { data: existingTickets } = await supabaseAdmin.from("tickets").select("id").eq("order_id", order.id);
+            if (!existingTickets || existingTickets.length === 0) {
+              const ticketCode = `PX-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+              await supabaseAdmin.from("tickets").insert({
+                ticket_code: ticketCode,
+                order_id: order.id,
+                event_id: order.event_id,
+                user_id: order.user_id,
+                price: order.total_amount,
+                status: "PAID",
+                qr_code: `${ticketCode}|${order.event_id}|${order.user_id}|PAID`
+              });
+              console.log(`[PX MERCADOPAGO] Ingresso \xFAnico emitido para o pedido confirmado.`);
+            } else {
+              console.log(`[PX MERCADOPAGO] Notifica\xE7\xE3o repetida recebida: ingresso j\xE1 emitido anteriormente (idempot\xEAncia preservada).`);
+            }
+          }
+        }
+      }
+      res.status(200).send("OK");
+    } catch (err) {
+      console.error("[PX MERCADOPAGO] Erro operacional no webhook:", err.message);
+      res.status(500).json({ error: "Erro interno ao processar webhook" });
+    }
   });
   const distPath = path.resolve(__dirname, "dist");
   const isProduction = process.env.NODE_ENV === "production" || process.env.npm_lifecycle_event === "start";

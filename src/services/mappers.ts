@@ -40,6 +40,7 @@ export interface DbEventRow {
   updated_at?: string | null;
   // Joins relacionais opcionais
   ticket_batches?: DbTicketBatchRow[] | null;
+  ticket_types?: DbTicketBatchRow[] | null;
   event_images?: Array<{
     image_url?: string | null;
     public_url?: string | null;
@@ -77,7 +78,8 @@ export interface DbTicketBatchRow {
   name: string;
   description?: string | null;
   price: number | string;
-  total_quantity: number;
+  total_quantity?: number | string | null;
+  quantity?: number | string | null;
   sold_quantity?: number | null;
   batch_number?: number | null;
   available?: boolean | null;
@@ -233,8 +235,9 @@ export interface DbNotificationInsert {
  * Converte um registro da tabela public.events (com possíveis joins) para EventItem.
  */
 export function dbEventToEventItem(row: DbEventRow): EventItem {
-  const ticketBatches: TicketBatch[] = Array.isArray(row.ticket_batches)
-    ? row.ticket_batches.map(dbTicketBatchToTicketBatch)
+  const rawBatches = row.ticket_batches || row.ticket_types || [];
+  const ticketBatches: TicketBatch[] = Array.isArray(rawBatches)
+    ? rawBatches.map(dbTicketBatchToTicketBatch)
     : [];
 
   const gallery: string[] = Array.isArray(row.event_images)
@@ -311,18 +314,22 @@ export function eventItemToDbEvent(item: Partial<EventItem>): DbEventInsert {
  * Converte um registro da tabela public.ticket_batches para TicketBatch.
  */
 export function dbTicketBatchToTicketBatch(row: DbTicketBatchRow): TicketBatch {
+  const total = Number(row.total_quantity ?? row.quantity ?? 0);
+  const sold = Number(row.sold_quantity ?? 0);
+  const available =
+    row.available !== undefined && row.available !== null
+      ? Boolean(row.available)
+      : total > sold;
+
   return {
     id: row.id,
     name: row.name,
     description: row.description ?? '',
     price: typeof row.price === 'string' ? parseFloat(row.price) : Number(row.price),
-    totalQuantity: Number(row.total_quantity),
-    soldQuantity: Number(row.sold_quantity ?? 0),
+    totalQuantity: total,
+    soldQuantity: sold,
     batchNumber: Number(row.batch_number ?? 1),
-    available:
-      row.available !== undefined && row.available !== null
-        ? Boolean(row.available)
-        : true,
+    available,
   };
 }
 

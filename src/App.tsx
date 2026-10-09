@@ -30,6 +30,7 @@ import { AdminVehiclesPage } from './pages/admin/AdminVehiclesPage';
 import { AdminAdminsPage } from './pages/admin/AdminAdminsPage';
 import { AdminSupabasePage } from './pages/admin/AdminSupabasePage';
 import { AdminBrandingPage } from './pages/admin/AdminBrandingPage';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 import { PxLogo } from './components/common/PxLogo';
 import { useAuth } from './context/AuthContext';
@@ -56,39 +57,86 @@ export default function App() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
 
-  // Initial Data Loading
+  // Initial Data Loading & Resilience States
   const [initialLoading, setInitialLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
-  // Carrega dados iniciais da aplicação com timeout de segurança
+  // Carrega dados iniciais da aplicação de forma resiliente usando Promise.allSettled
+  const loadData = async () => {
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      const results = await Promise.allSettled([
+        api.getEvents(),
+        api.getTickets(),
+        api.getVehicles(user?.id),
+        api.getNotifications(),
+        api.getDashboardStats(),
+      ]);
+
+      const [resEvts, resTkts, resVehs, resNotifs, resStats] = results;
+
+      if (resEvts.status === 'fulfilled') {
+        setEvents(Array.isArray(resEvts.value) ? resEvts.value : []);
+      } else {
+        console.error('[PX CUSTOM] Falha ao consultar eventos:', resEvts.reason);
+      }
+
+      if (resTkts.status === 'fulfilled') {
+        setTickets(Array.isArray(resTkts.value) ? resTkts.value : []);
+      } else {
+        console.error('[PX CUSTOM] Falha ao consultar ingressos:', resTkts.reason);
+      }
+
+      if (resVehs.status === 'fulfilled') {
+        setVehicles(Array.isArray(resVehs.value) ? resVehs.value : []);
+      } else {
+        console.error('[PX CUSTOM] Falha ao consultar veículos:', resVehs.reason);
+      }
+
+      if (resNotifs.status === 'fulfilled') {
+        setNotifications(Array.isArray(resNotifs.value) ? resNotifs.value : []);
+      } else {
+        console.error('[PX CUSTOM] Falha ao consultar notificações:', resNotifs.reason);
+      }
+
+      if (resStats.status === 'fulfilled') {
+        setStats(resStats.value || null);
+        setStatsError(null);
+      } else {
+        console.error('[PX CUSTOM] Falha ao consultar métricas do dashboard:', resStats.reason);
+        setStatsError(resStats.reason?.message || 'Falha ao buscar estatísticas');
+      }
+    } finally {
+      setStatsLoading(false);
+      setInitialLoading(false);
+    }
+  };
+
   useEffect(() => {
     const safetyTimeout = setTimeout(() => {
       setInitialLoading(false);
     }, 1500);
 
-    async function loadData() {
-      try {
-        const [evts, tkts, vehs, notifs, st] = await Promise.all([
-          api.getEvents(),
-          api.getTickets(),
-          api.getVehicles(user?.id),
-          api.getNotifications(),
-          api.getDashboardStats(),
-        ]);
-        setEvents(Array.isArray(evts) ? evts : []);
-        setTickets(Array.isArray(tkts) ? tkts : []);
-        setVehicles(Array.isArray(vehs) ? vehs : []);
-        setNotifications(Array.isArray(notifs) ? notifs : []);
-        setStats(st || null);
-      } catch (err) {
-        console.error('Erro ao carregar dados iniciais:', err);
-      } finally {
-        clearTimeout(safetyTimeout);
-        setInitialLoading(false);
-      }
-    }
-    loadData();
+    loadData().finally(() => clearTimeout(safetyTimeout));
+
     return () => clearTimeout(safetyTimeout);
   }, [user?.id]);
+
+  const handleReloadStats = async () => {
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      const st = await api.getDashboardStats();
+      setStats(st);
+    } catch (err: any) {
+      console.error('[PX CUSTOM] Erro ao recarregar métricas:', err);
+      setStatsError(err?.message || 'Falha ao buscar estatísticas');
+    } finally {
+      setStatsLoading(false);
+    }
+  };
 
   // Navegação com proteção de rotas (RBAC & Auth Guard)
   const handleNavigate = (view: string) => {
@@ -277,12 +325,46 @@ export default function App() {
         selectedEvent={selectedAdminEvent}
         onSelectEvent={setSelectedAdminEvent}
       >
-        {adminSection === 'dashboard' && stats && (
-          <AdminDashboard
-            stats={stats}
-            events={events}
-            onNavigateSection={setAdminSection}
-          />
+        {adminSection === 'dashboard' && (
+          statsLoading && !stats ? (
+            <div className="p-8 sm:p-12 rounded-2xl bg-[#0c0c0c] border border-[#1c1c1c] text-center space-y-4 animate-fadeIn">
+              <div className="w-10 h-10 border-4 border-[#FF1A2D] border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-gray-300 font-bold uppercase font-heading text-sm">Carregando métricas do PX CONTROL...</p>
+              <p className="text-xs text-gray-500">Consultando PostgreSQL e registros oficiais do Supabase</p>
+            </div>
+          ) : statsError && !stats ? (
+            <div className="p-8 sm:p-12 rounded-2xl bg-[#0c0c0c] border border-red-900/40 text-center space-y-4 animate-fadeIn">
+              <div className="w-12 h-12 rounded-full bg-red-950/60 border border-red-500/40 text-red-500 flex items-center justify-center mx-auto">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-black text-white font-heading uppercase">Falha ao Carregar Métricas</h3>
+              <p className="text-xs text-gray-400 max-w-md mx-auto">{statsError}</p>
+              <button
+                onClick={handleReloadStats}
+                className="px-5 py-2.5 bg-[#FF1A2D] hover:bg-[#d91425] text-white text-xs font-black uppercase rounded-xl font-heading transition-all shadow-lg shadow-[#FF1A2D]/20 cursor-pointer inline-flex items-center gap-2"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Tentar Recarregar Métricas</span>
+              </button>
+            </div>
+          ) : stats ? (
+            <AdminDashboard
+              stats={stats}
+              events={events}
+              onNavigateSection={setAdminSection}
+            />
+          ) : (
+            <div className="p-8 sm:p-12 rounded-2xl bg-[#0c0c0c] border border-[#1c1c1c] text-center space-y-4 animate-fadeIn">
+              <p className="text-gray-400 text-sm">Nenhum registro de métrica encontrado no momento.</p>
+              <button
+                onClick={handleReloadStats}
+                className="px-5 py-2.5 bg-[#141414] hover:bg-[#1f1f1f] border border-[#333] text-white text-xs font-bold uppercase rounded-xl transition-all cursor-pointer inline-flex items-center gap-2"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Atualizar Dashboard</span>
+              </button>
+            </div>
+          )
         )}
 
         {adminSection === 'events' && (

@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import jsQR from 'jsqr';
 import {
   Camera,
   CameraOff,
@@ -15,9 +16,14 @@ import {
 } from 'lucide-react';
 import { api } from '../../services/api';
 import { CheckInLog } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 
 export const AdminCheckinPage: React.FC = () => {
+  const { user, profile } = useAuth();
+  const operatorName = profile?.name || user?.email || 'Operador PX Portaria';
+
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState('');
   const [validating, setValidating] = useState(false);
   const [result, setResult] = useState<{
@@ -29,59 +35,115 @@ export const AdminCheckinPage: React.FC = () => {
   } | null>(null);
   const [checkins, setCheckins] = useState<CheckInLog[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
 
-  useEffect(() => {
-    loadCheckins();
-    return () => {
-      stopCamera();
-    };
-  }, []);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const animFrameIdRef = useRef<number | null>(null);
+  const lastScannedCodeRef = useRef<string>('');
+  const lastScanTimestampRef = useRef<number>(0);
 
   const loadCheckins = async () => {
     const logs = await api.getCheckins();
     setCheckins(logs);
   };
 
-  const startCamera = async () => {
-    try {
-      setResult(null);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' } },
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
-      setCameraActive(true);
-    } catch (err) {
-      alert('Não foi possível acessar a câmera. Verifique as permissões ou utilize a digitação manual do código.');
-      setCameraActive(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    setCameraActive(false);
-  };
-
-  const handleValidate = async (codeToTest: string) => {
+  const handleValidate = useCallback(async (codeToTest: string) => {
     if (!codeToTest.trim()) return;
     setValidating(true);
     setResult(null);
 
-    const res = await api.validateCheckIn(codeToTest, 'Operador PX Portaria 1');
+    const res = await api.validateCheckIn(codeToTest, operatorName);
     setResult(res);
     setValidating(false);
     if (res.authorized) {
       loadCheckins();
     }
+  }, [operatorName]);
+
+  const scanLoop = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const qrCode = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'dontInvert',
+        });
+
+        if (qrCode && qrCode.data) {
+          const now = Date.now();
+          const cleanData = qrCode.data.trim();
+          // Prevenção de leituras repetidas em sequência
+          if (cleanData !== lastScannedCodeRef.current || now - lastScanTimestampRef.current > 3500) {
+            lastScannedCodeRef.current = cleanData;
+            lastScanTimestampRef.current = now;
+            setManualCode(cleanData);
+            handleValidate(cleanData);
+          }
+        }
+      }
+    }
+
+    animFrameIdRef.current = requestAnimationFrame(scanLoop);
+  }, [handleValidate]);
+
+  const stopCamera = useCallback(() => {
+    if (animFrameIdRef.current) {
+      cancelAnimationFrame(animFrameIdRef.current);
+      animFrameIdRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  }, []);
+
+  const startCamera = async () => {
+    try {
+      setCameraError(null);
+      setResult(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute('playsinline', 'true');
+        await videoRef.current.play();
+      }
+      setCameraActive(true);
+      animFrameIdRef.current = requestAnimationFrame(scanLoop);
+    } catch (err: any) {
+      console.warn('[PX CHECKIN] Falha ao acessar a câmera:', err);
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Permissão de acesso à câmera negada. Permita o uso da câmera nas configurações do navegador.'
+        : 'Câmera não encontrada ou em uso por outro aplicativo. Digite o código manualmente.';
+      setCameraError(msg);
+      setCameraActive(false);
+    }
   };
+
+  useEffect(() => {
+    loadCheckins();
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
   const filteredLogs = checkins.filter(
     (l) =>
@@ -136,6 +198,9 @@ export const AdminCheckinPage: React.FC = () => {
               </div>
             )}
 
+            {/* Hidden canvas for optical frame analysis with jsQR */}
+            <canvas ref={canvasRef} className="hidden" />
+
             {/* Target Reticle Brackets (White/Red corners) */}
             <div className="absolute inset-4 pointer-events-none">
               <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-[#FF1A2D] rounded-tl-lg" />
@@ -150,8 +215,15 @@ export const AdminCheckinPage: React.FC = () => {
             )}
           </div>
 
+          {cameraError && (
+            <div className="p-3 bg-red-950/40 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              <span>{cameraError}</span>
+            </div>
+          )}
+
           <p className="text-xs text-gray-400 text-center">
-            Aproxime o QR Code do ingresso
+            Aproxime o QR Code impresso ou no celular do participante
           </p>
 
           {/* Camera Button (Matching Mockup Screen) */}
@@ -171,13 +243,13 @@ export const AdminCheckinPage: React.FC = () => {
             ) : (
               <>
                 <Camera className="w-4 h-4" />
-                <span>Ativar câmera</span>
+                <span>Ativar leitor de câmera</span>
               </>
             )}
           </button>
         </div>
 
-        {/* 2. MANUAL VALIDATION & TEST CONTROLS */}
+        {/* 2. MANUAL VALIDATION & REAL CONTROLS */}
         <div className="space-y-4">
           <div className="bg-[#0c0c0c] border border-[#1c1c1c] rounded-2xl p-5 space-y-4">
             <h3 className="text-sm font-bold text-white uppercase tracking-wider font-heading">
@@ -187,7 +259,7 @@ export const AdminCheckinPage: React.FC = () => {
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Ex: PX-2025-ENC-74892"
+                placeholder="Ex: PX-2025-ENC-..."
                 value={manualCode}
                 onChange={(e) => setManualCode(e.target.value.toUpperCase())}
                 onKeyDown={(e) => e.key === 'Enter' && handleValidate(manualCode)}
@@ -202,44 +274,9 @@ export const AdminCheckinPage: React.FC = () => {
               </button>
             </div>
 
-            {/* Quick Demo Test Buttons for Portaria */}
-            <div className="space-y-2 pt-2 border-t border-[#181818]">
-              <span className="text-[11px] font-bold text-gray-400 block uppercase tracking-wide">
-                Simulações de Portaria:
-              </span>
-              <div className="flex flex-wrap gap-2 text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setManualCode('PX-2025-ENC-74892');
-                    handleValidate('PX-2025-ENC-74892');
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-[#141414] hover:bg-[#1f1f1f] border border-[#2a2a2a] text-emerald-400 font-semibold"
-                >
-                  ✓ Ingresso Válido (74892)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setManualCode('PX-2025-ENC-90112');
-                    handleValidate('PX-2025-ENC-90112');
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-[#141414] hover:bg-[#1f1f1f] border border-[#2a2a2a] text-yellow-400 font-semibold"
-                >
-                  ⚠ Ingresso Usado (90112)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setManualCode('PX-INVAL-00000');
-                    handleValidate('PX-INVAL-00000');
-                  }}
-                  className="px-2.5 py-1.5 rounded-lg bg-[#141414] hover:bg-[#1f1f1f] border border-[#2a2a2a] text-[#FF1A2D] font-semibold"
-                >
-                  ✕ Ingresso Falso
-                </button>
-              </div>
-            </div>
+            <p className="text-[11px] text-gray-500">
+              A validação verifica a autenticidade do lote, evento e status de pagamento em tempo real no banco PostgreSQL com controle transacional anti-duplicidade.
+            </p>
           </div>
 
           {/* Validation Result Display (High Contrast Banner) */}
