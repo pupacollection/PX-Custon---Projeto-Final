@@ -65,15 +65,26 @@ export const DigitalTicketCard: React.FC<DigitalTicketCardProps> = ({
 
         {/* Big High-Contrast QR Code in White Container */}
         <div className="bg-white p-4 rounded-2xl flex flex-col items-center justify-center shadow-lg relative border-2 border-[#FF1A2D]/40">
-          {qrDataUrl ? (
-            <img
-              src={qrDataUrl}
-              alt={`QR Code ${ticket.code}`}
-              className="w-48 h-48 object-contain"
-            />
+          {isPaid || isUsed ? (
+            qrDataUrl ? (
+              <img
+                src={qrDataUrl}
+                alt={`QR Code ${ticket.code}`}
+                className="w-48 h-48 object-contain"
+              />
+            ) : (
+              <div className="w-48 h-48 flex items-center justify-center text-black text-xs font-mono">
+                Gerando QR Code...
+              </div>
+            )
           ) : (
-            <div className="w-48 h-48 flex items-center justify-center text-black text-xs font-mono">
-              Gerando QR Code...
+            <div className="w-48 h-48 flex flex-col items-center justify-center text-center p-4 bg-gray-100 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-gray-700 uppercase">
+                QR Code Bloqueado
+              </span>
+              <span className="text-[10px] text-gray-500">
+                Aguardando confirmação do pagamento pelo Mercado Pago para liberar seu acesso.
+              </span>
             </div>
           )}
 
@@ -102,6 +113,10 @@ export const DigitalTicketCard: React.FC<DigitalTicketCardProps> = ({
           ) : isUsed ? (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/40 text-xs font-black uppercase tracking-wide">
               UTILIZADO EM {ticket.checkedInAt || 'PORTARIA'}
+            </span>
+          ) : ticket.status === 'PENDENTE' ? (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40 text-xs font-black uppercase tracking-wide">
+              AGUARDANDO PAGAMENTO
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#1c1c1c] text-gray-300 text-xs font-black uppercase">

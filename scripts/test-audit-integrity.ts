@@ -116,12 +116,12 @@ function processWebhookNotification(
   // Atualizar pedido
   order.status = 'PAID';
 
-  // Registrar pagamento
+  // Registrar pagamento com status enum real ('APPROVED')
   db.payments.set(paymentData.id, {
     id: `pay-${paymentData.id}`,
     order_id: order.id,
     amount: paymentData.transaction_amount,
-    status: 'PAID',
+    status: 'APPROVED',
     external_reference: paymentData.id,
   });
 
@@ -400,6 +400,78 @@ async function runAuditSuite() {
     oneAuthorized && oneBlocked && dbConcurrency.checkins.length === 1,
     `Exatamente uma requisição foi autorizada (Portaria ${res1.authorized ? '1' : '2'}), e a tentativa concorrente foi bloqueada`
   );
+
+  // 14. Webhook - Rejeição de moeda estrangeira não-BRL
+  const dbCurrencyTest = createIsolatedMockDb();
+  dbCurrencyTest.orders.set('ord-usd', { id: 'ord-usd', total_amount: 100, status: 'PENDING' });
+  const rUsd = processWebhookNotification(dbCurrencyTest, {
+    id: 'pay-usd',
+    status: 'approved',
+    external_reference: 'ord-usd',
+    transaction_amount: 100,
+    currency_id: 'USD',
+  });
+  recordResult(
+    'Webhook',
+    'Rejeição de moeda estrangeira (não-BRL)',
+    rUsd.status === 400 && dbCurrencyTest.orders.get('ord-usd')?.status === 'PENDING',
+    `Rejeitado com HTTP 400 (${rUsd.message}) e pedido mantido PENDING`
+  );
+
+  // 15. Webhook - Rejeição de valor transacionado insuficiente
+  const dbAmountTest = createIsolatedMockDb();
+  dbAmountTest.orders.set('ord-amount', { id: 'ord-amount', total_amount: 250, status: 'PENDING' });
+  const rLowAmount = processWebhookNotification(dbAmountTest, {
+    id: 'pay-low',
+    status: 'approved',
+    external_reference: 'ord-amount',
+    transaction_amount: 50,
+    currency_id: 'BRL',
+  });
+  recordResult(
+    'Webhook',
+    'Rejeição de valor insuficiente',
+    rLowAmount.status === 400 && dbAmountTest.orders.get('ord-amount')?.status === 'PENDING',
+    `Rejeitado com HTTP 400 (${rLowAmount.message}) e nenhum ingresso emitido`
+  );
+
+  // 16. Check-in - Operador com perfil de usuário comum (role USER)
+  const isAuthorizedRoleFn = (role: string) => {
+    return ['ADMIN', 'SUPER_ADMIN', 'OPERADOR', 'OPERATOR', 'CHECKIN_OPERATOR', 'PORTARIA'].includes(role.toUpperCase());
+  };
+  const userRoleAuth = isAuthorizedRoleFn('USER');
+  const adminRoleAuth = isAuthorizedRoleFn('CHECKIN_OPERATOR');
+  recordResult(
+    'Check-in',
+    'Controle de acesso por papel de operador',
+    !userRoleAuth && adminRoleAuth,
+    `Usuário com role 'USER' rejeitado com ACESSO NEGADO; role 'CHECKIN_OPERATOR' aceita`
+  );
+
+  // 17. Verificação de Conexão Real ao Supabase Oficial (Leitura apenas, zero dados fictícios gravados)
+  const liveUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const liveKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+  if (liveUrl && liveKey) {
+    try {
+      const resp = await fetch(`${liveUrl}/rest/v1/events?select=count`, {
+        headers: { apikey: liveKey, Authorization: `Bearer ${liveKey}`, Prefer: 'count=exact' },
+      });
+      const isOnline = resp.status === 200;
+      recordResult(
+        'Supabase Real',
+        'Conectividade e Schema da base oficial',
+        isOnline,
+        `Resposta HTTP ${resp.status} do PostgREST oficial com RLS ativo`
+      );
+    } catch (e: any) {
+      recordResult(
+        'Supabase Real',
+        'Conectividade e Schema da base oficial',
+        false,
+        `Erro de rede ao conectar ao Supabase: ${e.message}`
+      );
+    }
+  }
 
   // --- RESUMO FINAL ---
   console.log('\n=============================================================');

@@ -163,6 +163,30 @@ export interface NotificationItem {
   actionUrl?: string;
 }
 
+export interface OrderItem {
+  id: string;
+  userId?: string;
+  eventId: string;
+  totalAmount: number;
+  status: 'PENDING' | 'PAID' | 'CANCELLED' | 'REFUNDED';
+  externalReference?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CheckoutResult {
+  orderId: string;
+  paymentId?: string;
+  status: 'PENDING' | 'PAID' | 'APPROVED';
+  paymentMethod: 'PIX' | 'CARTAO' | 'BOLETO';
+  totalAmount: number;
+  qrCodePix?: string;
+  qrCodePixBase64?: string;
+  ticket?: Ticket;
+  externalReference?: string;
+  expiresAt?: string;
+}
+
 export interface MercadoPagoConfig {
   environment: 'sandbox' | 'production';
   accessToken: string;

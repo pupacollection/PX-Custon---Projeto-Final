@@ -55,8 +55,16 @@ export const MyTicketsPage: React.FC<MyTicketsPageProps> = ({ tickets, onBrowseE
                       </h3>
                     </div>
 
-                    <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[10px] font-bold uppercase shrink-0">
-                      {ticket.status}
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase shrink-0 border ${
+                        isPaid
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                          : ticket.status === 'PENDENTE'
+                          ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                          : 'bg-[#1e1e1e] text-gray-400 border-[#2a2a2a]'
+                      }`}
+                    >
+                      {ticket.status === 'PENDENTE' ? 'AGUARDANDO PAGAMENTO' : ticket.status}
                     </span>
                   </div>
 

@@ -453,10 +453,11 @@ var PXStore = class {
       log
     };
   }
-  // Create Ticket after payment
+  // Create pending ticket or order record
   createTicket(data) {
     const event = this.events.find((e) => e.id === data.eventId) || this.events[0];
     const randomCode = `PX-${(/* @__PURE__ */ new Date()).getFullYear()}-${event.name.slice(0, 3).toUpperCase()}-${Math.floor(1e4 + Math.random() * 9e4)}`;
+    const ticketStatus = data.status || "PENDENTE";
     const newTicket = {
       id: `tkt-${Date.now()}`,
       code: randomCode,
@@ -472,23 +473,25 @@ var PXStore = class {
       buyerCpf: data.buyerCpf,
       buyerPhone: data.buyerPhone,
       userId: CURRENT_USER.id,
-      status: "PAGO",
+      status: ticketStatus,
       paymentMethod: data.paymentMethod,
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-      qrPayload: `${randomCode}|${event.id}|${CURRENT_USER.id}|PAGO`
+      qrPayload: `${randomCode}|${event.id}|${CURRENT_USER.id}|${ticketStatus}`
     };
     this.tickets.unshift(newTicket);
-    this.stats.ticketsSold += 1;
-    this.stats.ticketsAvailable = Math.max(0, this.stats.ticketsAvailable - 1);
-    this.stats.totalRevenue += data.price;
-    this.notifications.unshift({
-      id: `notif-${Date.now()}`,
-      title: "Ingresso emitido",
-      message: `Seu ingresso para ${event.name} (${data.batchName}) est\xE1 dispon\xEDvel com QR Code.`,
-      type: "SUCCESS",
-      read: false,
-      createdAt: "Agora mesmo"
-    });
+    if (ticketStatus === "PAGO") {
+      this.stats.ticketsSold += 1;
+      this.stats.ticketsAvailable = Math.max(0, this.stats.ticketsAvailable - 1);
+      this.stats.totalRevenue += data.price;
+      this.notifications.unshift({
+        id: `notif-${Date.now()}`,
+        title: "Ingresso emitido",
+        message: `Seu ingresso para ${event.name} (${data.batchName}) est\xE1 dispon\xEDvel com QR Code.`,
+        type: "SUCCESS",
+        read: false,
+        createdAt: "Agora mesmo"
+      });
+    }
     return newTicket;
   }
 };
@@ -571,10 +574,15 @@ dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
-var supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "";
-var supabaseAdmin = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey, {
+var serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+var supabaseAdmin = supabaseUrl && serviceRoleKey ? createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false }
 }) : null;
+if (!serviceRoleKey) {
+  console.warn(
+    "[PX CUSTOM BACKEND] ATEN\xC7\xC3O: SUPABASE_SERVICE_ROLE_KEY n\xE3o detectada. Opera\xE7\xF5es com privil\xE9gio administrativo no backend (bypass de RLS, webhook oficial e RPC) permanecem protegidas e n\xE3o recorrer\xE3o silenciosamente \xE0 chave an\xF4nima."
+  );
+}
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3e3;
@@ -741,7 +749,7 @@ async function startServer() {
     if (supabaseAdmin) {
       try {
         const { data, error } = await supabaseAdmin.from("tickets").select("*").order("created_at", { ascending: false });
-        if (!error && data && data.length > 0) {
+        if (!error && data) {
           return res.json(data);
         }
       } catch (err) {
@@ -752,27 +760,190 @@ async function startServer() {
   });
   app.post("/api/tickets/purchase", async (req, res) => {
     try {
-      const ticket = pxStore.createTicket(req.body);
-      if (supabaseAdmin) {
-        try {
-          await supabaseAdmin.from("tickets").insert({
-            code: ticket.code,
-            event_id: ticket.eventId,
-            buyer_name: ticket.buyerName,
-            buyer_email: ticket.buyerEmail,
-            buyer_cpf: ticket.buyerCpf,
-            batch_name: ticket.batchName,
-            price: ticket.price,
-            status: ticket.status,
-            qr_payload: ticket.qrPayload
-          });
-        } catch (dbErr) {
-          console.warn("[PX TICKETS] Aviso ao persistir ticket no Supabase:", dbErr);
+      const {
+        eventId,
+        batchName,
+        price,
+        buyerName,
+        buyerEmail,
+        buyerCpf,
+        buyerPhone,
+        paymentMethod = "PIX"
+      } = req.body;
+      if (!eventId || !batchName || !buyerName || !buyerEmail || !buyerCpf) {
+        return res.status(400).json({ error: "Dados obrigat\xF3rios do pedido est\xE3o incompletos." });
+      }
+      let authUserId = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && supabaseAdmin) {
+        const token = authHeader.replace(/^Bearer\s+/i, "");
+        const { data: uData } = await supabaseAdmin.auth.getUser(token);
+        if (uData?.user?.id) {
+          authUserId = uData.user.id;
         }
       }
-      res.status(201).json({ success: true, ticket });
+      let verifiedPrice = Number(price);
+      let validatedEventId = eventId;
+      let ticketTypeId = null;
+      if (supabaseAdmin) {
+        const { data: dbEvent } = await supabaseAdmin.from("events").select("id, title, status").eq("id", eventId).maybeSingle();
+        if (dbEvent) {
+          validatedEventId = dbEvent.id;
+          const { data: dbTypes } = await supabaseAdmin.from("ticket_types").select("id, name, price, quantity, sold_quantity").eq("event_id", dbEvent.id).ilike("name", `%${batchName}%`).maybeSingle();
+          if (dbTypes) {
+            ticketTypeId = dbTypes.id;
+            verifiedPrice = Number(dbTypes.price);
+          }
+        }
+      }
+      const orderCode = `ORD-${Date.now().toString(36).toUpperCase()}-${Math.floor(1e3 + Math.random() * 9e3)}`;
+      let createdOrderId = orderCode;
+      if (supabaseAdmin) {
+        try {
+          const { data: orderRow, error: orderErr } = await supabaseAdmin.from("orders").insert({
+            user_id: authUserId,
+            event_id: validatedEventId,
+            total_amount: verifiedPrice,
+            status: "PENDING",
+            external_reference: orderCode
+          }).select().single();
+          if (!orderErr && orderRow) {
+            createdOrderId = orderRow.id;
+            await supabaseAdmin.from("payments").insert({
+              order_id: orderRow.id,
+              user_id: authUserId,
+              amount: verifiedPrice,
+              status: "PENDING",
+              external_reference: orderCode
+            });
+            const ticketCode = `PX-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+            await supabaseAdmin.from("tickets").insert({
+              ticket_code: ticketCode,
+              order_id: orderRow.id,
+              event_id: validatedEventId,
+              user_id: authUserId,
+              price: verifiedPrice,
+              status: "PENDING",
+              qr_code: `${ticketCode}|${validatedEventId}|${authUserId || "guest"}|PENDING`,
+              ...ticketTypeId ? { ticket_type_id: ticketTypeId } : {}
+            });
+          }
+        } catch (dbErr) {
+          console.warn("[PX CHECKOUT] Aviso ao persistir pedido inicial no Supabase:", dbErr);
+        }
+      }
+      const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN || process.env.MP_ACCESS_TOKEN || "";
+      let qrCodePix = "";
+      let qrCodePixBase64 = "";
+      let mpPaymentId = "";
+      if (paymentMethod === "PIX") {
+        if (!accessToken) {
+          console.error("[PX MERCADOPAGO] Token de acesso (MERCADOPAGO_ACCESS_TOKEN) ausente no servidor.");
+          return res.status(503).json({
+            error: "Servi\xE7o de pagamentos indispon\xEDvel. Credenciais do Mercado Pago n\xE3o configuradas no servidor."
+          });
+        }
+        const mpRes = await fetch("https://api.mercadopago.com/v1/payments", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            "X-Idempotency-Key": `pix-order-${createdOrderId}`
+          },
+          body: JSON.stringify({
+            transaction_amount: verifiedPrice,
+            description: `Ingresso PX CUSTOM - ${batchName}`,
+            payment_method_id: "pix",
+            payer: {
+              email: buyerEmail,
+              first_name: buyerName.split(" ")[0] || "Participante",
+              last_name: buyerName.split(" ").slice(1).join(" ") || "PX",
+              identification: {
+                type: "CPF",
+                number: buyerCpf.replace(/\D/g, "")
+              }
+            },
+            external_reference: createdOrderId,
+            notification_url: `${req.protocol}://${req.get("host")}/api/mercadopago/webhook`
+          })
+        });
+        if (!mpRes.ok) {
+          const mpErrText = await mpRes.text().catch(() => "");
+          console.error("[PX MERCADOPAGO] Erro retornado pela API oficial do Mercado Pago:", mpRes.status, mpErrText);
+          return res.status(502).json({
+            error: "Falha ao gerar cobran\xE7a no Mercado Pago. Verifique os dados informados ou tente novamente."
+          });
+        }
+        const mpJson = await mpRes.json();
+        mpPaymentId = String(mpJson.id);
+        const poi = mpJson.point_of_interaction?.transaction_data;
+        if (!poi?.qr_code) {
+          console.error("[PX MERCADOPAGO] Resposta da API Mercado Pago sem dados PIX v\xE1lidos:", mpJson);
+          return res.status(502).json({
+            error: "O Mercado Pago n\xE3o retornou os dados de QR Code PIX para este pagamento."
+          });
+        }
+        qrCodePix = poi.qr_code;
+        qrCodePixBase64 = poi.qr_code_base64 || "";
+        if (supabaseAdmin && mpPaymentId) {
+          await supabaseAdmin.from("payments").update({ external_reference: mpPaymentId }).eq("order_id", createdOrderId);
+        }
+      }
+      const pendingTicket = pxStore.createTicket({
+        eventId: validatedEventId,
+        batchName,
+        price: verifiedPrice,
+        buyerName,
+        buyerEmail,
+        buyerCpf,
+        buyerPhone,
+        paymentMethod,
+        status: "PENDENTE"
+      });
+      return res.status(201).json({
+        orderId: createdOrderId,
+        paymentId: mpPaymentId || void 0,
+        status: "PENDING",
+        paymentMethod,
+        totalAmount: verifiedPrice,
+        qrCodePix,
+        qrCodePixBase64,
+        ticket: pendingTicket,
+        externalReference: createdOrderId
+      });
     } catch (err) {
-      res.status(400).json({ error: err.message || "Erro ao processar compra" });
+      console.error("[PX CHECKOUT] Erro ao processar checkout:", err);
+      return res.status(400).json({ error: err.message || "Erro ao processar compra" });
+    }
+  });
+  app.get("/api/orders/:id/status", async (req, res) => {
+    try {
+      const orderId = req.params.id;
+      if (!orderId) {
+        return res.status(400).json({ error: "ID do pedido obrigat\xF3rio" });
+      }
+      if (supabaseAdmin) {
+        const { data: order } = await supabaseAdmin.from("orders").select("id, status, total_amount").or(`id.eq.${orderId},external_reference.eq.${orderId}`).maybeSingle();
+        if (order) {
+          let paidTicket = null;
+          if (order.status === "PAID") {
+            const { data: tkt } = await supabaseAdmin.from("tickets").select("*").eq("order_id", order.id).maybeSingle();
+            paidTicket = tkt;
+          }
+          return res.json({
+            status: order.status,
+            orderId: order.id,
+            ticket: paidTicket || void 0
+          });
+        }
+      }
+      const storeTicket = pxStore.tickets.find((t) => t.id === orderId || t.code === orderId);
+      return res.json({
+        status: storeTicket ? storeTicket.status : "PENDING",
+        ticket: storeTicket && storeTicket.status === "PAGO" ? storeTicket : void 0
+      });
+    } catch (err) {
+      return res.status(500).json({ error: "Erro ao consultar status do pedido" });
     }
   });
   app.post("/api/checkin/validate", async (req, res) => {
@@ -787,13 +958,35 @@ async function startServer() {
     const cleanRaw = code.trim().toUpperCase();
     const cleanCode = cleanRaw.includes("|") ? cleanRaw.split("|")[0].trim() : cleanRaw;
     let operatorUser = null;
+    let operatorRole = "OPERATOR";
     const authHeader = req.headers.authorization;
     if (authHeader && supabaseAdmin) {
       try {
         const token = authHeader.replace(/^Bearer\s+/i, "");
-        const { data: userData } = await supabaseAdmin.auth.getUser(token);
-        if (userData?.user) {
+        const { data: userData, error: userErr } = await supabaseAdmin.auth.getUser(token);
+        if (userData?.user && !userErr) {
           operatorUser = userData.user;
+          const { data: adminRecord } = await supabaseAdmin.from("admin_users").select("role").eq("user_id", operatorUser.id).maybeSingle();
+          const { data: profileRecord } = await supabaseAdmin.from("profiles").select("role").eq("id", operatorUser.id).maybeSingle();
+          const roleFound = (adminRecord?.role || profileRecord?.role || "").toUpperCase();
+          if (roleFound) {
+            operatorRole = roleFound;
+          }
+          const isAuthorizedRole = [
+            "ADMIN",
+            "SUPER_ADMIN",
+            "OPERADOR",
+            "OPERATOR",
+            "CHECKIN_OPERATOR",
+            "PORTARIA"
+          ].includes(operatorRole) || operatorUser.email?.endsWith("@pxcustom.com.br");
+          if (!isAuthorizedRole) {
+            return res.status(403).json({
+              authorized: false,
+              reason: "ACESSO NEGADO",
+              details: "Seu usu\xE1rio n\xE3o possui permiss\xE3o de operador ou administrador para validar check-in."
+            });
+          }
         }
       } catch (authErr) {
         console.warn("[PX CHECKIN] Aviso ao validar token de operador:", authErr);
@@ -810,71 +1003,93 @@ async function startServer() {
         if (!rpcError && rpcResult && typeof rpcResult === "object") {
           return res.json(rpcResult);
         }
-        const { data: ticket, error: ticketErr } = await supabaseAdmin.from("tickets").select("*").or(`ticket_code.eq.${cleanCode},code.eq.${cleanCode}`).maybeSingle();
-        if (ticket) {
-          if (ticket.status === "UTILIZADO" || ticket.status === "USED") {
-            return res.json({
-              authorized: false,
-              reason: "INGRESSO J\xC1 UTILIZADO",
-              details: `Este ingresso j\xE1 realizou check-in em ${ticket.checked_in_at || "hor\xE1rio anterior"}${ticket.checked_in_by ? ` por ${ticket.checked_in_by}` : ""}.`,
-              ticket
-            });
-          }
-          if (ticket.status === "PENDENTE" || ticket.status === "PENDING") {
-            return res.json({
-              authorized: false,
-              reason: "PAGAMENTO PENDENTE",
-              details: "O pagamento deste ingresso ainda n\xE3o foi confirmado pelo Mercado Pago.",
-              ticket
-            });
-          }
-          if (ticket.status !== "PAGO" && ticket.status !== "PAID") {
-            return res.json({
-              authorized: false,
-              reason: `INGRESSO ${ticket.status}`,
-              details: `O status atual do ingresso \xE9 ${ticket.status}. Entrada n\xE3o permitida.`,
-              ticket
-            });
-          }
-          const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-          const targetStatus = ticket.status === "PAID" ? "USED" : "UTILIZADO";
-          const { data: updatedTicket, error: updateErr } = await supabaseAdmin.from("tickets").update({
-            status: targetStatus,
-            checked_in_at: nowIso,
-            checked_in_by: op
-          }).eq("id", ticket.id).in("status", ["PAGO", "PAID"]).select().single();
-          if (updateErr || !updatedTicket) {
-            return res.json({
-              authorized: false,
-              reason: "INGRESSO J\xC1 UTILIZADO",
-              details: "Tentativa concorrente detectada: o ingresso acabou de ser utilizado em outra portaria.",
-              ticket
-            });
-          }
-          try {
-            await supabaseAdmin.from("checkins").insert({
-              ticket_id: ticket.id,
-              event_id: ticket.event_id,
-              device_info: JSON.stringify({
-                operator: op,
-                operator_id: operatorUser?.id || null,
-                ticket_code: ticket.ticket_code || ticket.code || cleanCode,
-                status: "CONFIRMADO",
-                timestamp: nowIso
-              })
-            });
-          } catch (logErr) {
-            console.warn("[PX CHECKIN] Aviso ao gravar log na tabela checkins:", logErr);
-          }
-          return res.json({
-            authorized: true,
-            reason: "CHECK-IN AUTORIZADO",
-            details: "Acesso liberado com sucesso. Bem-vindo \xE0 experi\xEAncia PX CUSTOM!",
-            ticket: updatedTicket
+        const { data: ticket, error: ticketErr } = await supabaseAdmin.from("tickets").select("id, ticket_code, event_id, user_id, order_id, price, status, qr_code, created_at").eq("ticket_code", cleanCode).maybeSingle();
+        if (ticketErr) {
+          console.error("[PX CHECKIN] Falha ao consultar ingresso no Supabase:", ticketErr.message);
+          return res.status(500).json({
+            authorized: false,
+            reason: "ERRO NO BANCO",
+            details: "Falha operacional ao consultar o banco de dados oficial."
           });
         }
+        if (!ticket) {
+          return res.status(404).json({
+            authorized: false,
+            reason: "INGRESSO N\xC3O ENCONTRADO",
+            details: "C\xF3digo de ingresso n\xE3o localizado na base oficial de dados do evento.",
+            ticket: null
+          });
+        }
+        if (ticket.status === "UTILIZADO" || ticket.status === "USED") {
+          return res.json({
+            authorized: false,
+            reason: "INGRESSO J\xC1 UTILIZADO",
+            details: "Este ingresso j\xE1 realizou check-in anteriormente. Entrada duplicada proibida.",
+            ticket
+          });
+        }
+        if (ticket.status === "PENDENTE" || ticket.status === "PENDING") {
+          return res.json({
+            authorized: false,
+            reason: "PAGAMENTO PENDENTE",
+            details: "O pagamento deste ingresso ainda n\xE3o foi confirmado pelo Mercado Pago.",
+            ticket
+          });
+        }
+        if (ticket.status !== "PAGO" && ticket.status !== "PAID") {
+          return res.json({
+            authorized: false,
+            reason: `INGRESSO ${ticket.status}`,
+            details: `O status atual do ingresso \xE9 ${ticket.status}. Entrada n\xE3o permitida.`,
+            ticket
+          });
+        }
+        const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+        const { data: updatedTicket, error: updateErr } = await supabaseAdmin.from("tickets").update({
+          status: "USED"
+        }).eq("id", ticket.id).in("status", ["PAID", "PAGO"]).select().maybeSingle();
+        if (updateErr || !updatedTicket) {
+          return res.json({
+            authorized: false,
+            reason: "INGRESSO J\xC1 UTILIZADO",
+            details: "Tentativa concorrente detectada: o ingresso acabou de ser utilizado em outra portaria.",
+            ticket
+          });
+        }
+        const { error: logErr } = await supabaseAdmin.from("checkins").insert({
+          ticket_id: ticket.id,
+          event_id: ticket.event_id,
+          device_info: JSON.stringify({
+            operator_name: op,
+            operator_id: operatorUser?.id || null,
+            ticket_code: cleanCode,
+            status: "CONFIRMADO",
+            timestamp: nowIso
+          }),
+          created_at: nowIso
+        });
+        if (logErr) {
+          console.error("[PX CHECKIN] Falha ao gravar log em checkins, revertendo status:", logErr.message);
+          await supabaseAdmin.from("tickets").update({ status: "PAID" }).eq("id", ticket.id);
+          return res.status(500).json({
+            authorized: false,
+            reason: "FALHA DE PERSIST\xCANCIA",
+            details: "Erro ao registrar check-in no banco de dados. Transa\xE7\xE3o revertida por seguran\xE7a."
+          });
+        }
+        return res.json({
+          authorized: true,
+          reason: "CHECK-IN AUTORIZADO",
+          details: "Acesso liberado com sucesso. Bem-vindo \xE0 experi\xEAncia PX CUSTOM!",
+          ticket: updatedTicket
+        });
       } catch (dbErr) {
-        console.error("[PX CHECKIN] Falha operacional no banco:", dbErr);
+        console.error("[PX CHECKIN] Falha operacional no banco:", dbErr.message);
+        return res.status(500).json({
+          authorized: false,
+          reason: "ERRO OPERACIONAL",
+          details: "Erro interno ao processar valida\xE7\xE3o de check-in."
+        });
       }
     }
     const result = pxStore.validateCheckIn(cleanCode, operatorName);
@@ -1011,10 +1226,21 @@ async function startServer() {
       if (paymentStatus === "approved") {
         console.log(`[PX MERCADOPAGO] Pagamento verificado como aprovado na API oficial.`);
         if (supabaseAdmin) {
-          const { data: order, error: orderErr } = await supabaseAdmin.from("orders").select("id, code, event_id, user_id, buyer_name, buyer_email, buyer_cpf, total_amount, status").or(`mercadopago_payment_id.eq.${cleanDataId},code.eq.${externalReference || ""}`).maybeSingle();
-          if (orderErr) {
-            console.error("[PX MERCADOPAGO] Erro ao consultar pedido no Supabase:", orderErr.message);
-            return res.status(500).json({ error: "Erro ao consultar pedido no banco oficial." });
+          let order = null;
+          if (externalReference) {
+            const { data: ordById, error: ordErr } = await supabaseAdmin.from("orders").select("id, user_id, event_id, total_amount, status, created_at, updated_at").eq("id", externalReference).maybeSingle();
+            if (ordErr) {
+              console.error("[PX MERCADOPAGO] Erro ao consultar pedido no Supabase:", ordErr.message);
+              return res.status(500).json({ error: "Erro ao consultar pedido no banco oficial." });
+            }
+            order = ordById;
+          }
+          if (!order) {
+            const { data: payRecord } = await supabaseAdmin.from("payments").select("order_id").eq("external_reference", cleanDataId).maybeSingle();
+            if (payRecord?.order_id) {
+              const { data: ordFromPay } = await supabaseAdmin.from("orders").select("id, user_id, event_id, total_amount, status, created_at, updated_at").eq("id", payRecord.order_id).maybeSingle();
+              order = ordFromPay;
+            }
           }
           if (order) {
             if (currencyId !== "BRL") {
@@ -1025,14 +1251,40 @@ async function startServer() {
               console.warn(`[PX MERCADOPAGO] Valor recebido inferior ao total do pedido.`);
               return res.status(400).json({ error: "Valor pago divergente ou insuficiente." });
             }
-            if (order.status !== "PAID" && order.status !== "PAGO") {
+            if (order.status !== "PAID") {
               await supabaseAdmin.from("orders").update({
                 status: "PAID",
-                mercadopago_payment_id: cleanDataId,
                 updated_at: (/* @__PURE__ */ new Date()).toISOString()
               }).eq("id", order.id);
             }
-            const { data: existingTickets } = await supabaseAdmin.from("tickets").select("id").eq("order_id", order.id);
+            const { data: existingPayment } = await supabaseAdmin.from("payments").select("id").eq("order_id", order.id).maybeSingle();
+            if (existingPayment) {
+              await supabaseAdmin.from("payments").update({
+                status: "APPROVED",
+                amount: transactionAmount,
+                external_reference: cleanDataId,
+                updated_at: (/* @__PURE__ */ new Date()).toISOString()
+              }).eq("id", existingPayment.id);
+            } else {
+              await supabaseAdmin.from("payments").insert({
+                order_id: order.id,
+                user_id: order.user_id,
+                amount: transactionAmount,
+                status: "APPROVED",
+                external_reference: cleanDataId,
+                created_at: (/* @__PURE__ */ new Date()).toISOString(),
+                updated_at: (/* @__PURE__ */ new Date()).toISOString()
+              });
+            }
+            try {
+              await supabaseAdmin.from("payment_events").insert({
+                payment_id: cleanDataId,
+                event_type: "payment.updated",
+                payload: paymentData
+              });
+            } catch (pEvtErr) {
+            }
+            const { data: existingTickets } = await supabaseAdmin.from("tickets").select("id, status").eq("order_id", order.id);
             if (!existingTickets || existingTickets.length === 0) {
               const ticketCode = `PX-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
               await supabaseAdmin.from("tickets").insert({
@@ -1044,9 +1296,13 @@ async function startServer() {
                 status: "PAID",
                 qr_code: `${ticketCode}|${order.event_id}|${order.user_id}|PAID`
               });
-              console.log(`[PX MERCADOPAGO] Ingresso \xFAnico emitido para o pedido confirmado.`);
+              console.log("[PX MERCADOPAGO] Ingresso \xFAnico emitido com sucesso para o pedido confirmado.");
             } else {
-              console.log(`[PX MERCADOPAGO] Notifica\xE7\xE3o repetida recebida: ingresso j\xE1 emitido anteriormente (idempot\xEAncia preservada).`);
+              const pendingTickets = existingTickets.filter((t) => t.status === "PENDING");
+              if (pendingTickets.length > 0) {
+                await supabaseAdmin.from("tickets").update({ status: "PAID" }).eq("order_id", order.id).eq("status", "PENDING");
+              }
+              console.log("[PX MERCADOPAGO] Notifica\xE7\xE3o repetida recebida: ingresso j\xE1 emitido anteriormente (idempot\xEAncia preservada).");
             }
           }
         }
