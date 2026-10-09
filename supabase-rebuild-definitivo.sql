@@ -1,20 +1,105 @@
 -- =============================================================================
 -- PX CUSTON — SCRIPT DE RECONSTRUÇÃO CONTROLADA DO BANCO SUPABASE
 -- Arquivo: /app/applet/supabase-rebuild-definitivo.sql
--- VERSÃO: 3.3.0 — RECONSTRUÇÃO CONTROLADA PARA O AMBIENTE SUPABASE EXISTENTE
+-- VERSÃO: 3.4.0 — RECONSTRUÇÃO TRANSACIONAL CONTROLADA COM RESOLUÇÃO ESTRUTURAL DE DEPENDÊNCIAS
 -- 
 -- DIRETRIZES DE SEGURANÇA E EXECUÇÃO:
--- 1. Este script realiza a limpeza ordenada APENAS dos objetos públicos do PX CUSTON.
--- 2. PROTEÇÃO ABSOLUTA: O schema 'auth' e a tabela 'auth.users' NÃO SÃO ALTERADOS.
--- 3. NENHUM comando destrutivo genérico (NÃO contém DROP SCHEMA, DROP DATABASE, TRUNCATE).
--- 4. Reconstrução completa: 7 Enums canônicos, 13 Tabelas oficiais, Índices, Functions, Triggers,
+-- 1. Toda a operação é executada de forma atômica dentro de uma transação (BEGIN ... COMMIT).
+-- 2. Limpeza ordenada APENAS dos objetos públicos do PX CUSTON e policies de storage.objects
+--    que dependem das funções públicas do PX CUSTON inspecionadas dinamicamente via pg_depend / pg_proc.
+-- 3. PROTEÇÃO ABSOLUTA: O schema 'auth' e a tabela 'auth.users' NÃO SÃO ALTERADOS.
+-- 4. Sem DROP SCHEMA, sem DROP DATABASE, sem TRUNCATE genérico, sem tocar em buckets/arquivos.
+-- 5. Reconstrução canônica: 7 Enums, 13 Tabelas, Índices, Functions, Triggers,
 --    30 Políticas RLS, 4 Views analíticas e Bootstrap seguro de app_settings.
--- 5. NOTA: A execução deste script ocorre separadamente da configuração de Storage.
+-- 6. NOTA SOBRE STORAGE: As policies de storage.objects que dependem de is_admin()/fn_is_admin()
+--    são removidas antes do descarte das funções para evitar o erro 2BP01. A proteção e
+--    as novas policies de Storage devem ser aplicadas separadamente pelo script
+--    /app/applet/supabase-storage-definitivo.sql imediatamente após esta reconstrução.
 -- =============================================================================
+
+BEGIN;
 
 -- =============================================================================
 -- FASE 1: LIMPEZA ORDENADA E CONTROLADA DO AMBIENTE LEGADO
 -- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 1.0 REMOÇÃO CONTROLADA E ANTECIPADA DE POLICIES LEGADAS (RESOLUÇÃO ESTRUTURAL DO ERRO 2BP01)
+-- Inspeciona o catálogo do PostgreSQL (pg_depend, pg_proc, pg_policy) para identificar
+-- e desvincular estruturalmente TODAS as policies (no schema public e em storage.objects)
+-- que dependem das funções a serem removidas, além de limpar as policies das tabelas
+-- que serão recriadas.
+-- NOTA: Sem filtros frágeis de nomes/palavras-chave, sem tocar em auth.users, sem apagar arquivos.
+-- -----------------------------------------------------------------------------
+DO 6947
+DECLARE
+    r RECORD;
+BEGIN
+    -- A) Remoção de todas as policies nas tabelas de negócio do schema public que serão reconstruídas
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename IN (
+              'profiles', 'vehicles', 'vehicle_images', 'media_records',
+              'events', 'event_images', 'ticket_batches', 'orders',
+              'tickets', 'checkins', 'payment_events', 'notifications',
+              'app_settings', 'audit_logs'
+          )
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+
+    -- B) Remoção dinâmica no catálogo PostgreSQL de quaisquer policies em storage.objects
+    --    que dependam explicitamente das funções públicas do PX CUSTON (ex.: is_admin, fn_is_admin, etc.)
+    FOR r IN (
+        SELECT 
+            n.nspname AS schemaname,
+            c.relname AS tablename,
+            pol.polname AS policyname
+        FROM pg_policy pol
+        JOIN pg_class c ON pol.polrelid = c.oid
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE n.nspname = 'storage'
+          AND c.relname = 'objects'
+          AND EXISTS (
+              SELECT 1
+              FROM pg_depend dep
+              JOIN pg_proc p ON dep.refobjid = p.oid
+              JOIN pg_namespace np ON p.pronamespace = np.oid
+              WHERE dep.objid = pol.oid
+                AND np.nspname = 'public'
+                AND p.proname IN (
+                    'is_admin',
+                    'is_super_admin',
+                    'fn_is_admin',
+                    'fn_is_super_admin',
+                    'fn_is_finance_or_admin',
+                    'fn_is_checkin_operator',
+                    'fn_is_support_or_admin'
+                )
+          )
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+
+    -- C) Remoção residual de salvaguarda: desvincula qualquer policy em storage.objects cuja expressão
+    --    contenha chamadas textuais às funções legadas public.is_admin ou public.fn_is_admin
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'storage'
+          AND tablename = 'objects'
+          AND (
+              qual ILIKE '%is_admin%' OR
+              qual ILIKE '%fn_is_admin%' OR
+              with_check ILIKE '%is_admin%' OR
+              with_check ILIKE '%fn_is_admin%'
+          )
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+END 6947;
 
 -- -----------------------------------------------------------------------------
 -- 1.1 REMOÇÃO DE VIEWS LEGADAS DO PX CUSTON
@@ -60,6 +145,7 @@ DROP FUNCTION IF EXISTS public.update_updated_at_column();
 -- -----------------------------------------------------------------------------
 DROP TABLE IF EXISTS public.checkins;
 DROP TABLE IF EXISTS public.tickets;
+DROP TABLE IF EXISTS public.payment_events;
 DROP TABLE IF EXISTS public.orders;
 DROP TABLE IF EXISTS public.ticket_batches;
 DROP TABLE IF EXISTS public.event_images;
@@ -68,7 +154,6 @@ DROP TABLE IF EXISTS public.vehicle_images;
 DROP TABLE IF EXISTS public.media_records;
 DROP TABLE IF EXISTS public.vehicles;
 DROP TABLE IF EXISTS public.notifications;
-DROP TABLE IF EXISTS public.payment_events;
 DROP TABLE IF EXISTS public.audit_logs;
 DROP TABLE IF EXISTS public.app_settings;
 DROP TABLE IF EXISTS public.profiles;
@@ -944,3 +1029,5 @@ VALUES (
     TRUE
 )
 ON CONFLICT (key) DO NOTHING;
+
+COMMIT;
